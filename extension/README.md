@@ -21,8 +21,20 @@ Fills the ATS application form you're looking at with the answers JobAgent alrea
 
 Answers are matched to form controls by, in order: the ATS-native input name (Lever and classic Greenhouse forms use the same names JobAgent captured as `fieldKey`), exact visible label, then label containment. Values are set through the native setters + `input`/`change` events so React-based forms (Ashby, new Greenhouse, Workday-lite UIs) register them. The resume PDF is fetched from JobAgent (tailored version when one exists) and attached to file inputs via `DataTransfer`.
 
+## Custom dropdowns
+
+Combobox-style widgets (new Greenhouse, Ashby, react-select) are driven for real: the filler focuses the input, types the answer (falling back to a shorter prefix for strict filters), waits for the listbox to render, and commits the best-matching option with the mousedown sequence these widgets listen for. If no option ever matches, the widget is cleared and reported as unmatched rather than left with junk text that would block submission.
+
+## Multi-step forms
+
+Fill is per-page and idempotent — on multi-step applications (Workday-style), just click **Fill this form** again on each step; already-used fields aren't touched twice within a step and unmatched ones are re-listed.
+
+## Settings
+
+The popup's Settings section lets you change the JobAgent URL (default `http://localhost:3000`) if you run the app on another port.
+
 ## Limits
 
-- Custom dropdowns that aren't real `<select>` elements (some Ashby/new-Greenhouse widgets) can't be driven reliably — those show up in the "couldn't match" list.
 - Forms inside cross-origin iframes can't be reached.
+- Fully bespoke widgets that expose neither a real `<input>` nor ARIA roles may still need manual selection.
 - No captcha solving, ever — that's you.

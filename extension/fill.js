@@ -1,10 +1,14 @@
 // JobAgent form filler — injected on demand from the popup. Fills whatever ATS form is
 // on the page from drafted answers: matches by ATS field name first (Lever/Greenhouse
 // names equal our fieldKeys), then by visible label. Sets values the React-safe way so
-// modern ATS UIs register them. Never clicks submit — that's the human's job.
+// modern ATS UIs register them, and can drive combobox/listbox widgets (new Greenhouse,
+// Ashby, react-select) by typing and clicking the matching option. Never clicks submit —
+// that's the human's job.
 (() => {
   if (window.__jobagentFillReady) return;
   window.__jobagentFillReady = true;
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   const norm = (s) =>
     (s || "")
@@ -52,10 +56,76 @@
 
   function highlight(el, color) {
     try {
-      el.style.outline = `2px solid ${color}`;
-      el.style.outlineOffset = "1px";
+      const target = el.closest("[class*='select' i]") || el;
+      target.style.outline = `2px solid ${color}`;
+      target.style.outlineOffset = "1px";
     } catch {}
   }
+
+  // ---- combobox / custom dropdown driving ----------------------------------------
+
+  function isCombobox(el) {
+    if (el.tagName !== "INPUT") return false;
+    return (
+      el.getAttribute("role") === "combobox" ||
+      !!el.getAttribute("aria-autocomplete") ||
+      !!el.closest("[class*='select__' i], [class*='combobox' i], [data-testid*='select' i]")
+    );
+  }
+
+  function visibleOptions() {
+    return [...document.querySelectorAll("[role='option'], [role='listbox'] li, [class*='select__option' i]")].filter(
+      (o) => visible(o) && o.textContent.trim()
+    );
+  }
+
+  function bestOption(answer) {
+    const wanted = norm(answer);
+    if (!wanted) return null;
+    const opts = visibleOptions();
+    return (
+      opts.find((o) => norm(o.textContent) === wanted) ||
+      opts.find((o) => {
+        const t = norm(o.textContent);
+        return t && (t.includes(wanted) || wanted.includes(t));
+      }) ||
+      null
+    );
+  }
+
+  function clickOption(opt) {
+    // react-select and friends commit on mousedown, not click
+    for (const type of ["pointerdown", "mousedown", "mouseup", "click"]) {
+      opt.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+    }
+  }
+
+  async function fillCombobox(el, answer) {
+    el.focus();
+    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    el.click();
+    // try: full answer typed, then a short prefix (strict filters), then just the open list
+    for (const typed of [answer, answer.slice(0, 4), null]) {
+      if (typed !== null) setNativeValue(el, typed);
+      for (let i = 0; i < 5; i++) {
+        const opt = bestOption(answer);
+        if (opt) {
+          clickOption(opt);
+          await sleep(60);
+          return true;
+        }
+        await sleep(180);
+      }
+    }
+    // leave the widget as we found it: typed junk in a combobox usually blocks submit
+    setNativeValue(el, "");
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    el.blur();
+    return false;
+  }
+
+  // ---- classic controls ----------------------------------------------------------
 
   function fillSelect(sel, answer) {
     const wanted = norm(answer);
@@ -107,7 +177,9 @@
     }
   }
 
-  function run(payload) {
+  // ---- main ----------------------------------------------------------------------
+
+  async function run(payload) {
     const controls = [...document.querySelectorAll("input, textarea, select")].filter(
       (el) =>
         !el.disabled &&
@@ -163,6 +235,8 @@
         const yes = /^(yes|true|1)/i.test(a.answer);
         if (el.checked !== yes) el.click();
         ok = true;
+      } else if (isCombobox(el)) {
+        ok = await fillCombobox(el, a.answer);
       } else {
         setNativeValue(el, a.answer);
         ok = true;
@@ -198,10 +272,9 @@
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg?.type !== "jobagent-fill") return;
-    try {
-      sendResponse(run(msg));
-    } catch (err) {
-      sendResponse({ filled: 0, skipped: [`error: ${String(err)}`], attachedResume: false });
-    }
+    run(msg)
+      .then(sendResponse)
+      .catch((err) => sendResponse({ filled: 0, skipped: [`error: ${String(err)}`], attachedResume: false }));
+    return true; // async response
   });
 })();

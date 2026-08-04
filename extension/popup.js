@@ -1,7 +1,6 @@
-const BASE = "http://localhost:3000";
-
 const $ = (id) => document.getElementById(id);
 
+let BASE = "http://localhost:3000";
 let tab = null;
 let apps = [];
 
@@ -34,6 +33,15 @@ async function api(path, opts) {
 }
 
 async function init() {
+  const stored = await chrome.storage.local.get("base");
+  if (stored.base) BASE = stored.base;
+  $("base").value = BASE;
+  $("base").addEventListener("change", async () => {
+    BASE = $("base").value.replace(/\/$/, "") || "http://localhost:3000";
+    await chrome.storage.local.set({ base: BASE });
+    location.reload();
+  });
+
   [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   try {
     const data = await (await api("/api/applications?status=ready,submitted")).json();
@@ -103,7 +111,9 @@ $("fill").addEventListener("click", async () => {
           .map((s) => `• ${s}`)
           .join("\n")}</span>`
       );
-    parts.push('<span class="muted">Review the page, solve any captcha, and click the site\'s submit button yourself.</span>');
+    parts.push(
+      '<span class="muted">Review the page, solve any captcha, and click the site\'s submit button yourself. Multi-step form? Click Fill again on each step.</span>'
+    );
     $("result").innerHTML = parts.join("<br>");
   } catch (err) {
     $("result").innerHTML = `<span class="err">${String(err.message || err)}\n(Chrome pages and some iframed forms can't be filled.)</span>`;
