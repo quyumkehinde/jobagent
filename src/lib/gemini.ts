@@ -1,5 +1,8 @@
 import { GoogleGenAI } from "@google/genai";
 import { getSetting } from "./settings";
+import { createLogger } from "./log";
+
+const log = createLogger("gemini");
 
 let client: GoogleGenAI | null = null;
 
@@ -57,7 +60,9 @@ export async function generate(prompt: string, opts: GenOptions): Promise<string
       const retryable = /429|RESOURCE_EXHAUSTED|503|UNAVAILABLE|overloaded|empty response/i.test(msg);
       if (!retryable || attempt === 3) throw err;
       // free tier: back off hard on quota errors
-      await new Promise((r) => setTimeout(r, (attempt + 1) * 20000));
+      const backoffMs = (attempt + 1) * 20000;
+      log.warn("retrying after error", { attempt: attempt + 1, backoffMs, model: opts.model, error: msg.slice(0, 200) });
+      await new Promise((r) => setTimeout(r, backoffMs));
     }
   }
   throw new Error("unreachable");

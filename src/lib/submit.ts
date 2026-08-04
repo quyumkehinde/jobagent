@@ -3,6 +3,9 @@ import path from "node:path";
 import { db, tables } from "@/db";
 import { eq } from "drizzle-orm";
 import { UA } from "@/connectors/types";
+import { createLogger } from "./log";
+
+const log = createLogger("submit");
 
 // Programmatic submission is best-effort: ATSs increasingly gate public forms with
 // captchas. We attempt the classic form POST and STRICTLY verify success; anything
@@ -132,19 +135,31 @@ export async function trySubmit(applicationId: number): Promise<"api"> {
     where: eq(tables.applicationAnswers.applicationId, applicationId),
   });
 
-  if (job.source === "lever") await submitLever(applicationId, job.url, answers);
-  else if (job.source === "greenhouse") await submitGreenhouse(applicationId, job.url, answers);
-  else throw new SubmitNotPossibleError(`programmatic submit not supported for source "${job.source}"`);
+  log.info("attempting programmatic submit", { applicationId, source: job.source, url: job.url });
+  try {
+    if (job.source === "lever") await submitLever(applicationId, job.url, answers);
+    else if (job.source === "greenhouse") await submitGreenhouse(applicationId, job.url, answers);
+    else throw new SubmitNotPossibleError(`programmatic submit not supported for source "${job.source}"`);
+  } catch (err) {
+    if (err instanceof SubmitNotPossibleError) {
+      log.warn("falling back to assisted", { applicationId, source: job.source, reason: err.message });
+    } else {
+      log.error("submit failed", { applicationId, source: job.source, error: String(err).slice(0, 300) });
+    }
+    throw err;
+  }
 
   await db
     .update(tables.applications)
     .set({ status: "submitted", method: "api", submittedAt: new Date(), updatedAt: new Date() })
     .where(eq(tables.applications.id, applicationId));
+  log.info("submitted programmatically", { applicationId, source: job.source });
   return "api";
 }
 
 // User confirms they submitted manually via the assisted view.
 export async function markSubmittedManually(applicationId: number): Promise<void> {
+  log.info("marked submitted manually", { applicationId });
   await db
     .update(tables.applications)
     .set({ status: "submitted", method: "assisted", submittedAt: new Date(), updatedAt: new Date() })

@@ -1,4 +1,7 @@
 import { RawJob, UA, titleLooksRelevant } from "./types";
+import { createLogger } from "@/lib/log";
+
+const log = createLogger("yc");
 
 interface YcPosting {
   id: number;
@@ -109,6 +112,7 @@ export async function fetchYcJobs(
         if (p?.id && p.title && p.url) postings.set(p.id, p);
       }
     } catch (err) {
+      log.warn("slice fetch failed", { slice, error: String(err).slice(0, 200) });
       sliceErrors.push(String(err));
     }
   }
@@ -116,14 +120,21 @@ export async function fetchYcJobs(
 
   const jobs: RawJob[] = [];
   let detailFetches = 0;
+  let detailFailures = 0;
+  let overCap = 0;
+  let known = 0;
   for (const p of postings.values()) {
     if (!titleLooksRelevant(p.title.trim())) continue;
     if (knownExternalIds.has(String(p.id))) {
       // Already ingested — listing-only is enough for ingest to bump lastSeenAt/reopen.
+      known++;
       jobs.push(toRawJob(p));
       continue;
     }
-    if (detailFetches >= maxDetailFetches) continue; // waits for the next run
+    if (detailFetches >= maxDetailFetches) {
+      overCap++; // waits for the next run
+      continue;
+    }
     detailFetches++;
     try {
       const page = await fetchDataPage(BASE + p.url);
@@ -143,10 +154,19 @@ export async function fetchYcJobs(
           },
         });
       }
-    } catch {
+    } catch (err) {
       // skip — the job stays absent from the DB and is retried next run
+      detailFailures++;
+      log.warn("detail fetch failed, will retry next run", { job: p.url, error: String(err).slice(0, 200) });
     }
     await sleep(200);
   }
+  log.info("sweep done", {
+    listed: postings.size,
+    known,
+    detailFetched: detailFetches,
+    detailFailed: detailFailures,
+    overCap,
+  });
   return jobs;
 }

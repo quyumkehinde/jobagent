@@ -4,6 +4,9 @@ import { generateJSON } from "./gemini";
 import { buildCandidateSummary, getProfileValue } from "./candidate";
 import { getSetting, DEFAULTS } from "./settings";
 import { FormField, fetchFormForJob } from "./forms";
+import { createLogger, startTimer } from "./log";
+
+const log = createLogger("draft");
 
 function normalizeQuestion(q: string): string {
   return q.toLowerCase().replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim();
@@ -79,6 +82,8 @@ export interface DraftResult {
 export async function draftApplication(jobId: number): Promise<DraftResult> {
   const job = await db.query.jobs.findFirst({ where: eq(tables.jobs.id, jobId) });
   if (!job) throw new Error(`job ${jobId} not found`);
+  const elapsed = startTimer();
+  log.info("start", { jobId, title: job.title, company: job.companyName, source: job.source });
 
   let app = await db.query.applications.findFirst({ where: eq(tables.applications.jobId, jobId) });
   if (!app) {
@@ -91,6 +96,7 @@ export async function draftApplication(jobId: number): Promise<DraftResult> {
   }
 
   const { fields, introspected } = await fetchFormForJob(job);
+  log.info("form fetched", { fields: fields.length, introspected, method: introspected ? "api" : "assisted" });
   await db
     .update(tables.applications)
     .set({ formSchema: JSON.stringify({ introspected, fields }), method: introspected ? "api" : "assisted" })
@@ -100,6 +106,8 @@ export async function draftApplication(jobId: number): Promise<DraftResult> {
   await db.delete(tables.applicationAnswers).where(eq(tables.applicationAnswers.applicationId, app.id));
 
   const pending: FormField[] = [];
+  let deterministicCount = 0;
+  let qaBankCount = 0;
   let sortOrder = 0;
   for (const f of fields) {
     if (f.fieldType === "file") {
@@ -114,7 +122,12 @@ export async function draftApplication(jobId: number): Promise<DraftResult> {
       });
       continue;
     }
-    const det = (await deterministicAnswer(f.label)) ?? (await qaBankAnswer(f.label));
+    let det = await deterministicAnswer(f.label);
+    if (det) deterministicCount++;
+    else {
+      det = await qaBankAnswer(f.label);
+      if (det) qaBankCount++;
+    }
     await db.insert(tables.applicationAnswers).values({
       applicationId: app.id,
       fieldKey: f.fieldKey,
@@ -129,6 +142,12 @@ export async function draftApplication(jobId: number): Promise<DraftResult> {
     });
     if (!det) pending.push(f);
   }
+
+  log.info("answers resolved", {
+    deterministic: deterministicCount,
+    qaBank: qaBankCount,
+    needsAi: pending.length,
+  });
 
   const candidate = await buildCandidateSummary();
   const model = await getSetting("writerModel", DEFAULTS.writerModel);
@@ -158,6 +177,7 @@ export async function draftApplication(jobId: number): Promise<DraftResult> {
         aiCount++;
       }
     }
+    log.info("ai answers filled", { requested: pending.length, filled: aiCount });
   }
 
   // Cover letter: generated whenever the form has a cover-letter-ish field or as assisted text
@@ -193,6 +213,7 @@ export async function draftApplication(jobId: number): Promise<DraftResult> {
     .where(eq(tables.applications.id, app.id));
   await db.update(tables.jobs).set({ feedStatus: "applied" }).where(eq(tables.jobs.id, jobId));
 
+  log.info("done", { applicationId: app.id, aiCount, needsReview, coverLetter: wantsCover || !introspected, ms: elapsed() });
   return { applicationId: app.id, aiCount, needsReview };
 }
 

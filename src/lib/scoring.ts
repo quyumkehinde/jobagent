@@ -3,8 +3,10 @@ import { eq, isNull, and } from "drizzle-orm";
 import { generateJSON } from "./gemini";
 import { buildCandidateSummary } from "./candidate";
 import { getSetting, DEFAULTS } from "./settings";
+import { createLogger, startTimer } from "./log";
 
 const BATCH_SIZE = 8;
+const log = createLogger("scoring");
 
 interface ScoreResult {
   index: number;
@@ -68,7 +70,14 @@ export async function scoreUnscored(limit?: number): Promise<{ scored: number; q
     limit: maxPerRun,
     columns: { id: true, title: true, companyName: true, location: true, salary: true, description: true },
   });
-  if (unscored.length === 0) return { scored: 0, queued: 0 };
+  if (unscored.length === 0) {
+    log.info("nothing to score");
+    return { scored: 0, queued: 0 };
+  }
+
+  const elapsed = startTimer();
+  const totalBatches = Math.ceil(unscored.length / BATCH_SIZE);
+  log.info("start", { jobs: unscored.length, batches: totalBatches, model, threshold });
 
   const candidate = await buildCandidateSummary();
   let scored = 0;
@@ -110,11 +119,21 @@ export async function scoreUnscored(limit?: number): Promise<{ scored: number; q
         scored++;
         if (shouldQueue) queued++;
       }
+      log.info("batch done", { batch: `${Math.floor(i / BATCH_SIZE) + 1}/${totalBatches}`, scored, queued });
     } catch (err) {
-      console.error("scoring batch failed:", err);
+      log.error("batch failed", {
+        batch: `${Math.floor(i / BATCH_SIZE) + 1}/${totalBatches}`,
+        error: String(err).slice(0, 300),
+      });
       // stop the run on quota errors; remaining jobs stay unscored for next run
-      if (/429|RESOURCE_EXHAUSTED/i.test(String(err))) break;
+      if (/429|RESOURCE_EXHAUSTED/i.test(String(err))) {
+        log.warn("quota exhausted — aborting scoring, remaining jobs wait for next run", {
+          remaining: unscored.length - scored,
+        });
+        break;
+      }
     }
   }
+  log.info("done", { scored, queued, ms: elapsed() });
   return { scored, queued };
 }

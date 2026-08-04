@@ -276,7 +276,7 @@ Shared primitives live in `src/components/ui.tsx`; save-on-blur is the form idio
 
 - **Scheduling**: worker cron `5 */N * * *`. Change N in Settings (worker restart required — it reads the setting at boot). For auto-start on login, wrap `npm run worker` in a LaunchAgent plist.
 - **Gemini budget math**: scoring = ~15 calls/120 jobs; drafting ≈ 2 calls/application. At free-tier ~250 requests/day that's roughly 120 scored jobs + ~40 drafted applications — above the 50/day review target. The throttle (§7) keeps RPM legal; RPD exhaustion just delays scoring to the next run.
-- **Backup**: copy `data/` (DB + resumes). That's the entire state.
+- **Logging**: `src/lib/log.ts` — a tiny logfmt-style console logger (`2026-08-04T12:00:00.000Z INFO [pipeline] ats sweep done boards=118 found=3402 ms=41250`). Scopes: `worker`, `pipeline` (run/sweep/ingest/discovery, per-board failures + strike counts), `yc` (slice/detail fetch health), `scoring` (batch progress, quota aborts), `gemini` (retries/backoff), `draft` (form fetch, deterministic/QA-bank/AI answer split, timings), `submit` (attempts, assisted fallbacks with reason). Logs go to the stdout/stderr of whichever process ran the code: the worker terminal for cron runs, the `next dev` terminal for UI-triggered actions. Grep by scope, e.g. `npm run worker 2>&1 | grep '\[scoring\]'`.
 - **Reset scoring** (e.g. after changing the prompt): `sqlite3 data/jobagent.db "UPDATE jobs SET scored_at=NULL, score=NULL WHERE feed_status='new';"`
 - **Postgres migration path**: swap the Drizzle driver/dialect, re-run `db:push`, replace the two raw-SQL analytics queries (`strftime` → `to_char`). Schema and app code otherwise carry over.
 
