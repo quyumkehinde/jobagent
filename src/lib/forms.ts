@@ -93,5 +93,31 @@ export async function fetchFormForJob(job: {
       // fall through to standard fields
     }
   }
+  if (job.source === "yc" && job.raw) {
+    try {
+      const raw = JSON.parse(job.raw) as { customQuestions?: unknown[] };
+      const custom: FormField[] = [];
+      (raw.customQuestions || []).forEach((q, i) => {
+        const label =
+          typeof q === "string"
+            ? q
+            : (q as { question?: string; text?: string; label?: string })?.question ??
+              (q as { text?: string })?.text ??
+              (q as { label?: string })?.label;
+        if (label) {
+          custom.push({
+            fieldKey: `yc_custom_${i}`,
+            label: String(label).slice(0, 300),
+            fieldType: "textarea",
+            required: false,
+          });
+        }
+      });
+      // still assisted (WaaS is login-gated) — these exist so drafting prepares answers
+      if (custom.length) return { fields: [...standardFields(), ...custom], introspected: false };
+    } catch {
+      // fall through to standard fields
+    }
+  }
   return { fields: standardFields(), introspected: false };
 }

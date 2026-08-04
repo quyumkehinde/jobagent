@@ -28,7 +28,8 @@ These were the decisions the project was built around:
   Ashby      ─┘ │   └──────────┘    └────────────┘    └──────────────┘    └─────────────────┘   │
   RemoteOK   ───┤        every N hours (cron) or on-demand via POST /api/pipeline               │
   WWR (RSS)  ───┤                                                                               │
-  HN thread  ───┘                                                                               │
+  HN thread  ───┤                                                                               │
+  YC jobs    ───┘                                                                               │
                 └───────────────────────────────────────────────────────────────────────────────┘
                                                    │
                                                    ▼
@@ -60,7 +61,7 @@ jobagent/
 ├── seed/companies.json        # ~125 seed ATS boards {name, ats, token, visaSponsor?}
 ├── scripts/
 │   ├── seed.ts                # npm run seed
-│   └── smoke.ts               # live-tests all six connectors
+│   └── smoke.ts               # live-tests all seven connectors
 └── src/
     ├── db/
     │   ├── schema.ts          # ALL tables (Drizzle)
@@ -73,6 +74,7 @@ jobagent/
     │   ├── remoteok.ts        # remoteok.com/api
     │   ├── weworkremotely.ts  # 4 RSS category feeds (hand-rolled parser)
     │   ├── hn.ts              # HN "Who is hiring" via Algolia
+    │   ├── yc.ts              # YC job board (ycombinator.com/jobs, public WaaS pages)
     │   └── discovery.ts       # extracts ATS board tokens from aggregator posts
     ├── lib/
     │   ├── settings.ts        # settings KV + DEFAULTS
@@ -169,6 +171,7 @@ Per-source notes:
 - **RemoteOK** (`remoteok.ts`): `GET remoteok.com/api`. Requires a browser User-Agent. First array element is a legal notice — filtered by requiring `id`/`position`/`company`.
 - **WeWorkRemotely** (`weworkremotely.ts`): 4 category RSS feeds (programming, back-end, full-stack, devops), hand-rolled regex RSS parser (no XML dependency), dedupes across feeds, splits WWR's `"Company: Role"` title convention.
 - **HN Who's Hiring** (`hn.ts`): finds the latest thread via Algolia (`author_whoishiring` stories), pulls up to 3 pages × 1000 comments, keeps **top-level** comments only (`parent_id === storyId`), parses the `Company | Role | Location` first-line convention. Titles are messy by nature — scoring reads the full text, so that's fine.
+- **YC job board** (`yc.ts`): the public directory at `ycombinator.com/jobs` (the public face of Work at a Startup). Pages are server-rendered with all data HTML-escaped inside a `data-page` attribute — the connector regex-extracts and JSON-parses it. Two-phase fetch: listing slices (`/jobs/role/software-engineer` + `/remote`, deduped by id) give title/salary/location/**visa sponsorship**; the detail page adds the markdown JD and any WaaS custom application questions. Detail pages are fetched **only for jobs not already in the DB** (the pipeline passes the known-ID set), capped at 40/run with a 200 ms gap; a job whose detail fetch fails or exceeds the cap is omitted entirely and retried next run — never ingested without its JD. Structured facts (visa, min experience, YC batch, job type, one-liner) are prepended to the description so the scoring excerpt sees them. Applying requires a WaaS login → always assisted mode.
 - **Discovery** (`discovery.ts`): regex-scans every aggregator job's URL + description for `boards.greenhouse.io/{token}`, `jobs.lever.co/{token}`, `jobs.ashbyhq.com/{token}`, greenhouse embed URLs. New `(ats, token)` pairs are inserted with `origin: "discovery"` and get polled as full boards on the next run. **This is how the company list grows itself.**
 
 Failure isolation: each company board and each aggregator is try/caught individually — one bad source never kills a run.
@@ -211,6 +214,7 @@ The pipeline is triggered three ways: worker cron, `POST /api/pipeline` (fire-an
 ### 8.2 Form schema (`src/lib/forms.ts`)
 - **Greenhouse**: the real form, per job, via `GET .../jobs/{id}?questions=true` — standard fields, custom questions, compliance/EEO blocks, with types and select options. `introspected: true`.
 - **Lever / Ashby / aggregators**: a universal `standardFields()` set (name, email, phone, LinkedIn/GitHub/portfolio URLs, location, cover-letter textarea) — the fields ~every application asks. `introspected: false` → the application is `assisted`-first.
+- **YC**: `standardFields()` plus any WaaS custom questions captured at scrape time (stored in `raw.customQuestions`), appended as optional textareas so drafting prepares copy-paste answers for the real form.
 
 ### 8.3 Drafting (`src/lib/answers.ts` → `draftApplication(jobId)`)
 Answer resolution runs in strict precedence order — cheapest and most reliable first:
@@ -228,7 +232,7 @@ Philosophy: **never fake a success.** `status: submitted` requires either ATS co
 
 - **Lever**: multipart POST to `jobs.lever.co/{company}/{id}/apply` with standard fields + resume PDF. Success only if the response redirects to `/thanks` or contains a received-confirmation string.
 - **Greenhouse** (classic `boards.greenhouse.io` only): GET the job page → extract Rails `authenticity_token` + cookies → bail early if reCAPTCHA/hCaptcha markup is present → multipart POST → verify thank-you text.
-- Anything else (Ashby, aggregators, captcha-gated boards, unconfirmed responses) throws `SubmitNotPossibleError` → the API returns `{ assisted: true, reason }` → the UI shows the reason and switches you to assisted mode: open the real form, copy each prepared answer, then **"I submitted it manually — mark as applied."**
+- Anything else (Ashby, aggregators, YC — login-gated, captcha-gated boards, unconfirmed responses) throws `SubmitNotPossibleError` → the API returns `{ assisted: true, reason }` → the UI shows the reason and switches you to assisted mode: open the real form, copy each prepared answer, then **"I submitted it manually — mark as applied."**
 
 Expect programmatic submit to work on a minority of boards and shrink over time as ATSs add captchas — the architecture treats it as an optimization, not the core path. The core path is assisted, and it's what the v2 Chrome extension will automate properly (in-browser, so captchas are the user's one click).
 
@@ -284,7 +288,8 @@ Shared primitives live in `src/components/ui.tsx`; save-on-blur is the form idio
 4. **Eligibility classification is LLM judgment** — strict prompt + `unknown`-stays-eligible biases it toward false positives (wasted review seconds) over false negatives (missed jobs), which is the right failure direction.
 5. **No inbox integration yet** — ghosted/rejected/screening transitions are manual until the v1.5 Gmail sync.
 6. **36 of the 125 seed board tokens were stale** at first run — expected; the 3-strike system retires them and discovery/manual adds replace them.
-7. **Single process assumptions** — the `running` flag is in-process; don't run two workers. (The UI trigger and worker colliding is possible but harmless: SQLite WAL + upserts make duplicate ingestion idempotent.)
+7. **YC jobs are snapshot-once and assisted-only** — the detail page is fetched a single time (a later JD edit on YC's side isn't picked up), and applying requires a Work at a Startup login, so programmatic submit is permanently impossible for this source.
+8. **Single process assumptions** — the `running` flag is in-process; don't run two workers. (The UI trigger and worker colliding is possible but harmless: SQLite WAL + upserts make duplicate ingestion idempotent.)
 
 ## 13. Roadmap
 

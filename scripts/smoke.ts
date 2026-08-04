@@ -5,6 +5,7 @@ import { fetchAshby } from "../src/connectors/ashby";
 import { fetchRemoteOk } from "../src/connectors/remoteok";
 import { fetchWeWorkRemotely } from "../src/connectors/weworkremotely";
 import { fetchHnWhoIsHiring } from "../src/connectors/hn";
+import { fetchYcJobs } from "../src/connectors/yc";
 
 async function main() {
   const tests: [string, () => Promise<{ title: string }[]>][] = [
@@ -14,6 +15,7 @@ async function main() {
     ["remoteok", fetchRemoteOk],
     ["weworkremotely", fetchWeWorkRemotely],
     ["hn", fetchHnWhoIsHiring],
+    ["yc", () => fetchYcJobs(undefined, 3)],
   ];
   for (const [name, fn] of tests) {
     try {

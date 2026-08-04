@@ -30,7 +30,7 @@ export const jobs = sqliteTable(
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
     companyId: integer("company_id").references(() => companies.id),
-    source: text("source").notNull(), // greenhouse | lever | ashby | remoteok | weworkremotely | hn | manual
+    source: text("source").notNull(), // greenhouse | lever | ashby | remoteok | weworkremotely | hn | yc | manual
     externalId: text("external_id").notNull(),
     url: text("url").notNull(),
     applyUrl: text("apply_url"),

@@ -6,15 +6,19 @@ import { fetchAshby } from "@/connectors/ashby";
 import { fetchRemoteOk } from "@/connectors/remoteok";
 import { fetchWeWorkRemotely } from "@/connectors/weworkremotely";
 import { fetchHnWhoIsHiring } from "@/connectors/hn";
+import { fetchYcJobs } from "@/connectors/yc";
 import { discoverBoards } from "@/connectors/discovery";
 import { RawJob } from "@/connectors/types";
 import { ingestJobs } from "./ingest";
 import { scoreUnscored } from "./scoring";
+import { createLogger, startTimer } from "./log";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const log = createLogger("pipeline");
 
 async function recordRun(source: string, fn: () => Promise<RawJob[]>): Promise<RawJob[]> {
   const [run] = await db.insert(tables.scrapeRuns).values({ source }).returning({ id: tables.scrapeRuns.id });
+  const elapsed = startTimer();
   try {
     const raw = await fn();
     const { added } = await ingestJobs(raw);
@@ -22,19 +26,24 @@ async function recordRun(source: string, fn: () => Promise<RawJob[]>): Promise<R
       .update(tables.scrapeRuns)
       .set({ finishedAt: new Date(), found: raw.length, added })
       .where(eq(tables.scrapeRuns.id, run.id));
+    log.info("aggregator done", { source, found: raw.length, added, ms: elapsed() });
     return raw;
   } catch (err) {
     await db
       .update(tables.scrapeRuns)
       .set({ finishedAt: new Date(), error: String(err).slice(0, 500) })
       .where(eq(tables.scrapeRuns.id, run.id));
+    log.error("aggregator failed", { source, ms: elapsed(), error: String(err).slice(0, 300) });
     return [];
   }
 }
 
 export async function scrapeAtsBoards(): Promise<RawJob[]> {
   const companies = await db.query.companies.findMany({ where: eq(tables.companies.active, true) });
+  const elapsed = startTimer();
+  log.info("ats sweep start", { boards: companies.length });
   const all: RawJob[] = [];
+  let failed = 0;
   for (const c of companies) {
     try {
       let jobs: RawJob[] = [];
@@ -47,7 +56,14 @@ export async function scrapeAtsBoards(): Promise<RawJob[]> {
         .set({ lastPolledAt: new Date(), errorCount: 0, lastError: null })
         .where(eq(tables.companies.id, c.id));
     } catch (err) {
+      failed++;
       const errorCount = c.errorCount + 1;
+      log.warn("board poll failed", {
+        board: `${c.ats}/${c.token}`,
+        strike: errorCount,
+        retired: errorCount >= 3,
+        error: String(err).slice(0, 200),
+      });
       await db
         .update(tables.companies)
         .set({
@@ -61,6 +77,7 @@ export async function scrapeAtsBoards(): Promise<RawJob[]> {
     }
     await sleep(150);
   }
+  log.info("ats sweep done", { boards: companies.length, failed, found: all.length, ms: elapsed() });
   return all;
 }
 
@@ -77,15 +94,29 @@ let running = false;
 export async function runPipeline(): Promise<PipelineResult> {
   if (running) throw new Error("pipeline already running");
   running = true;
+  const elapsed = startTimer();
+  log.info("run start");
   try {
     const atsJobs = await scrapeAtsBoards();
     const atsIngest = await ingestJobs(atsJobs);
+    log.info("ats ingest done", { found: atsJobs.length, added: atsIngest.added });
+
+    // yc fetches a detail page per new job — pass what's already ingested so it skips those
+    const ycKnown = new Set(
+      (
+        await db.query.jobs.findMany({
+          where: eq(tables.jobs.source, "yc"),
+          columns: { externalId: true },
+        })
+      ).map((j) => j.externalId)
+    );
 
     const aggregated: RawJob[] = [];
     for (const [source, fn] of [
       ["remoteok", fetchRemoteOk],
       ["weworkremotely", fetchWeWorkRemotely],
       ["hn", fetchHnWhoIsHiring],
+      ["yc", () => fetchYcJobs(ycKnown)],
     ] as const) {
       const raw = await recordRun(source, fn);
       aggregated.push(...raw);
@@ -93,15 +124,21 @@ export async function runPipeline(): Promise<PipelineResult> {
 
     // grow the company list from ATS links found in aggregator posts
     const discovered = await discoverBoards(aggregated);
+    if (discovered) log.info("boards discovered", { discovered });
 
     const { scored, queued } = await scoreUnscored();
-    return {
+    const result = {
       found: atsJobs.length + aggregated.length,
       added: atsIngest.added, // aggregator adds are counted inside recordRun; approximate combined below
       discovered,
       scored,
       queued,
     };
+    log.info("run done", { ...result, ms: elapsed() });
+    return result;
+  } catch (err) {
+    log.error("run failed", { ms: elapsed(), error: String(err).slice(0, 300) });
+    throw err;
   } finally {
     running = false;
   }
