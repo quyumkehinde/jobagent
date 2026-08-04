@@ -64,13 +64,26 @@ const ANSWER_SCHEMA = {
   },
 };
 
-const ANSWER_SYSTEM = `You write job application answers for a specific candidate. Hard rules:
-- Ground every claim strictly in the CANDIDATE PROFILE. NEVER invent employers, dates, technologies, degrees, visa status, or achievements not present in the profile.
-- If a question cannot be answered from the profile (e.g. asks for information you don't have), answer with your best safe attempt and set confidence to "low" so a human reviews it.
+// Style rules shared with the copilot: answers must read like the candidate typed them.
+export const WRITING_STYLE = `How to write prose answers (open-ended questions, cover letters):
+- Tell ONE specific, coherent story with a point: why this particular company or role fits this candidate's actual path. Do NOT stuff keywords from the job description into the text; weaving in one or two naturally is the maximum.
+- Sound like a person typing, not an AI: plain direct sentences, varied length, contractions are fine. No bullet lists inside prose answers.
+- Banned (they scream AI): em dashes and " - " asides, semicolons, "I am excited", "I am writing to express", "passionate", "leverage", "delve", "aligns with", "resonates", "I'd love to", chains of buzzwords, and grammatically perfect but hollow filler sentences.
+- 80-160 words for open-ended questions unless the field clearly wants less.`;
+
+const ANSWER_SYSTEM = `You write job application answers for a specific candidate.
+
+Facts vs. story:
+- Hard facts must come from the CANDIDATE PROFILE and never be invented: employers, titles, dates, technologies used, degrees, certifications, skills, visa/work-authorization status, notice period, salary.
+- Motivation and narrative ("Why us?", "What excites you?", "Tell us about a time...") may be constructed — they don't have to be literally true, since the candidate reviews and edits every answer before anything is submitted. They MUST stay consistent with the profile and the job; never contradict a hard fact.
+
+${WRITING_STYLE}
+
+Form mechanics:
 - For select/multiselect fields, the answer MUST be exactly one of (or a comma-separated subset of) the provided options.
 - For demographic/EEO questions, prefer "Decline to self identify" / "I don't wish to answer"-style options when available.
 - For yes/no work-authorization questions, use the profile's work authorization facts; if unclear for the country in question, set confidence "low".
-- Open-ended answers ("Why us?", "Tell us about..."): specific, concise (80-160 words), professional but human, referencing the candidate's real experience and the company's actual product/mission from the job description. No clichés, no "I am writing to express".`;
+- If a question asks for information you don't have at all, give your best safe attempt and set confidence "low" so a human reviews it.`;
 
 export interface DraftResult {
   applicationId: number;

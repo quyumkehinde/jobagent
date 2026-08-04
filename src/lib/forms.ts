@@ -61,7 +61,11 @@ export async function fetchGreenhouseForm(boardToken: string, jobId: string): Pr
   );
   const out: FormField[] = [];
   const push = (q: GhQuestion) => {
+    // File questions (Resume/CV, cover letter) come with a sibling "or paste text"
+    // field — we always attach the real file, so only keep the file field.
+    const hasFile = (q.fields || []).some((f) => f.type === "input_file");
     for (const f of q.fields || []) {
+      if (hasFile && f.type !== "input_file") continue;
       out.push({
         fieldKey: f.name,
         label: q.label,

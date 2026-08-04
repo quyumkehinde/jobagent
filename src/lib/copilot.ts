@@ -5,6 +5,7 @@ import { buildCandidateSummary, getProfileValue } from "./candidate";
 import { getSetting, DEFAULTS } from "./settings";
 import { saveTailoredResume } from "./tailor";
 import { LatexCompileError } from "./latex";
+import { WRITING_STYLE } from "./answers";
 import { createLogger, startTimer } from "./log";
 
 const log = createLogger("copilot");
@@ -25,7 +26,10 @@ Rules:
 - resumeLatex: return the COMPLETE edited LaTeX document. Keep the documentclass, packages, layout and margins identical — it must still fit one page. Never add skills, employers, or claims the candidate profile doesn't support; if the user asks you to fabricate, refuse in the reply and make no edit.
 - coverLetter: return the complete new text (plain text, no LaTeX).
 - answerEdits: reference form fields by their exact fieldKey from the provided list.
-- reply: 1-2 sentences confirming exactly what you changed, or asking for clarification if the request is ambiguous. Never claim an edit you did not return.`;
+- reply: 1-2 sentences confirming exactly what you changed, or asking for clarification if the request is ambiguous. Never claim an edit you did not return.
+
+When writing or rewriting cover letter or answer text, follow these style rules strictly:
+${WRITING_STYLE}`;
 
 const SCHEMA = {
   type: "object",

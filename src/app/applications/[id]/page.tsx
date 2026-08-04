@@ -158,16 +158,24 @@ export default function ApplicationPage({ params }: { params: Promise<{ id: stri
       <section>
         <h2 className="text-lg font-semibold mb-2">Application answers</h2>
         <div className="space-y-3">
-          {answers.map((a) => (
-            <AnswerEditor
-              key={a.id}
-              answer={a}
-              saving={saving === a.id}
-              copied={copied === a.id}
-              onCopy={(text) => copy(text, a.id)}
-              onSave={saveAnswer}
-            />
-          ))}
+          {answers
+            // drop "or paste your resume" text twins of file fields (old drafts have them)
+            .filter(
+              (a) =>
+                a.fieldType === "file" ||
+                !answers.some((o) => o.fieldType === "file" && o.label === a.label)
+            )
+            .map((a) => (
+              <AnswerEditor
+                key={a.id}
+                answer={a}
+                appId={app.id}
+                saving={saving === a.id}
+                copied={copied === a.id}
+                onCopy={(text) => copy(text, a.id)}
+                onSave={saveAnswer}
+              />
+            ))}
         </div>
       </section>
 
@@ -366,12 +374,14 @@ function ResumeCard({
 
 function AnswerEditor({
   answer: a,
+  appId,
   saving,
   copied,
   onCopy,
   onSave,
 }: {
   answer: Answer;
+  appId: number;
   saving: boolean;
   copied: boolean;
   onCopy: (text: string) => void;
@@ -398,7 +408,14 @@ function AnswerEditor({
         </div>
       </div>
       {a.fieldType === "file" ? (
-        <div className="text-sm text-zinc-400">📎 {value || "(default resume)"}</div>
+        <a
+          href={`/api/applications/${appId}/resume`}
+          target="_blank"
+          rel="noreferrer"
+          className="text-sm text-emerald-400 hover:underline"
+        >
+          📎 {value || "(default resume)"} ↗
+        </a>
       ) : a.fieldType === "select" && options.length ? (
         <select className={input} value={value} onChange={(e) => setValue(e.target.value)}>
           <option value="">— select —</option>
