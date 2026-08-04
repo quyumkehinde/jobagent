@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "JobAgent Autofill",
+  "version": "0.1.0",
+  "description": "Fills the ATS application form you're on with your drafted JobAgent answers, attaches your resume, and marks the application as applied.",
+  "permissions": ["activeTab", "scripting"],
+  "host_permissions": ["http://localhost:3000/*"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "JobAgent Autofill"
+  }
+}

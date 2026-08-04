@@ -57,6 +57,7 @@ jobagent/
 │   ├── jobagent.db            # the entire application state
 │   └── resumes/               # uploaded resume PDFs
 ├── docs/ARCHITECTURE.md       # this file
+├── extension/                 # Chrome extension (MV3): autofills ATS forms from drafted answers
 ├── drizzle.config.ts          # drizzle-kit config (sqlite, ./data/jobagent.db)
 ├── seed/companies.json        # ~125 seed ATS boards {name, ats, token, visaSponsor?}
 ├── scripts/
@@ -274,7 +275,10 @@ The **copilot** on the review page takes plain-language instructions ("add Kafka
 | `/api/settings` | GET / PUT | config (API key write-only masked as `•••set•••`) |
 | `/api/analytics` | GET | stage counts, per-source submitted/response, per-week submissions, job stats |
 
-No auth anywhere — the app binds to localhost for one user. **Do not port-forward it** without adding auth. This unauthenticated local API is also the planned integration point for the v2 Chrome extension.
+No auth anywhere — the app binds to localhost for one user. **Do not port-forward it** without adding auth. This unauthenticated local API is what the Chrome extension (`extension/`, §8.7) talks to.
+
+### 8.7-adjacent: the Chrome extension (`extension/`)
+MV3, no build step; load unpacked from `extension/` (README there). Permissions: `activeTab` + `scripting` (injects only when you click) + host access to `localhost:3000`. The popup lists `ready` applications (best URL-match to the current tab preselected); **Fill this form** injects `fill.js`, which matches drafted answers to form controls — ATS-native input name first (Lever/classic-Greenhouse names equal our `fieldKey`s), then exact label, then containment — sets values via native setters + `input`/`change` events (so React-based forms register them), picks select options (placeholder options can never match), clicks radios, attaches the resume PDF (tailored when present) to file inputs via `DataTransfer`, and drops the cover letter into a cover/comments textarea. Filled fields outline green, unmatched ones are listed. It never clicks submit — the human reviews, solves the captcha, submits, then hits **mark as applied** in the popup (`POST .../submit {mode:"manual"}`).
 
 ## 10. UI (all client components, dark theme, Tailwind v4)
 
@@ -311,4 +315,4 @@ Shared primitives live in `src/components/ui.tsx`; save-on-blur is the form idio
 ## 13. Roadmap
 
 - **v1.5**: Gmail OAuth sync (auto stage transitions from recruiter emails), per-job tailored resume PDF generation (HTML → PDF, reordered bullets, review-gated), Indeed/Google Jobs scraping, LinkedIn via logged-in browser session, embedding-based QA-bank matching.
-- **v2**: Chrome extension (MV3) — reads drafted answers from the local API, autofills whatever ATS form the user is on, one click per application, captcha solved by the human who's already there. The `applicationAnswers.fieldKey/label/fieldType` model was designed with this consumer in mind.
+- **v2**: Chrome extension — **shipped, v0** (see §9 note / `extension/README.md`). Remaining extension work: driving non-`<select>` custom dropdowns (Ashby, new Greenhouse), multi-page application flows, per-site fill recipes.

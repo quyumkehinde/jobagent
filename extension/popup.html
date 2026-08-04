@@ -1,0 +1,50 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  body {
+    width: 340px;
+    margin: 0;
+    padding: 12px;
+    background: #18181b;
+    color: #e4e4e7;
+    font: 13px/1.45 -apple-system, "Segoe UI", sans-serif;
+  }
+  h1 { font-size: 14px; margin: 0 0 8px; }
+  select, button {
+    width: 100%;
+    box-sizing: border-box;
+    background: #27272a;
+    color: #e4e4e7;
+    border: 1px solid #3f3f46;
+    border-radius: 6px;
+    padding: 7px 9px;
+    font-size: 13px;
+    margin-bottom: 8px;
+  }
+  button { cursor: pointer; }
+  button.primary { background: #059669; border-color: #059669; color: #fff; font-weight: 600; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .muted { color: #a1a1aa; font-size: 12px; }
+  .err { color: #fca5a5; font-size: 12px; white-space: pre-wrap; }
+  .ok { color: #6ee7b7; font-size: 12px; }
+  .warn { color: #fcd34d; font-size: 12px; white-space: pre-wrap; }
+  #result { margin-top: 4px; }
+  .match { color: #6ee7b7; font-size: 11px; }
+</style>
+</head>
+<body>
+  <h1>JobAgent Autofill</h1>
+  <div id="status" class="muted">Connecting to JobAgent…</div>
+  <div id="main" style="display:none">
+    <div class="muted" style="margin-bottom:4px">Application to fill from:</div>
+    <select id="apps"></select>
+    <div id="match" class="match"></div>
+    <button id="fill" class="primary">Fill this form</button>
+    <button id="applied">I submitted it — mark as applied</button>
+    <div id="result"></div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
