@@ -61,6 +61,7 @@ const SYSTEM = `You are a precise job-matching engine for one specific candidate
   * onsite-europe: onsite/hybrid role located in London or elsewhere in Europe.
   * onsite-other: onsite/hybrid anywhere else.
 - visaSignal: does the company/job sponsor visas or offer relocation? "yes" only if stated in the posting; "likely" if the company is known to sponsor; "no" if posting says no sponsorship.
+- An explicit statement that the position is NOT eligible for relocation assistance (or that the candidate must already be located in/authorized for the area) is a hard negative for any onsite/hybrid role the candidate would have to move for: set visaSignal "no" unless visa sponsorship is separately and explicitly stated, and score it like an ineligible job (<30). Statements in an [eligibility signals] block override your assumptions about the company.
 - Be strict about eligibility: read location requirements carefully. When the posting is ambiguous, use "unknown" rather than guessing.`;
 
 // Enforces the per-company queue cap: for each company, only its `cap` best-scoring
@@ -111,6 +112,24 @@ export async function rebalanceCompanyQueues(
   return { demoted, promoted };
 }
 
+// ATSs bury the sentences that decide eligibility (relocation, work authorization,
+// "must be located in…") at the BOTTOM of postings — past any sane excerpt cap. Pull
+// them out of the full text and pin them to the excerpt so truncation can't hide them.
+const SIGNAL_RE =
+  /(relocat|visa|sponsor|work authori[sz]|authori[sz]ed to work|eligible to work|right to work|must (be|currently) (based|located|reside)|time ?zones?|remote (in|within|from)|citizens?|residents?|work permit)/i;
+
+export function scoringExcerpt(description: string | null): string {
+  const d = description || "no description";
+  const head = d.slice(0, 1800);
+  const signals = d
+    .slice(1600) // small overlap so a sentence straddling the cut isn't lost
+    .split(/\n+|(?<=\.)\s+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 20 && s.length < 300 && SIGNAL_RE.test(s));
+  if (!signals.length) return head;
+  return `${head}\n\n[eligibility signals from further down the posting:]\n${[...new Set(signals)].slice(0, 8).join("\n")}`;
+}
+
 export async function scoreUnscored(limit?: number): Promise<{ scored: number; queued: number }> {
   const maxPerRun = limit ?? (await getSetting("maxScoringPerRun", DEFAULTS.maxScoringPerRun));
   const threshold = await getSetting("queueThreshold", DEFAULTS.queueThreshold);
@@ -142,7 +161,7 @@ export async function scoreUnscored(limit?: number): Promise<{ scored: number; q
     const jobsText = batch
       .map(
         (j, idx) =>
-          `--- JOB ${idx} ---\nTitle: ${j.title}\nCompany: ${j.companyName}\nLocation: ${j.location || "unspecified"}\n${j.salary ? `Salary: ${j.salary}\n` : ""}Description (excerpt):\n${(j.description || "no description").slice(0, 1800)}`
+          `--- JOB ${idx} ---\nTitle: ${j.title}\nCompany: ${j.companyName}\nLocation: ${j.location || "unspecified"}\n${j.salary ? `Salary: ${j.salary}\n` : ""}Description (excerpt):\n${scoringExcerpt(j.description)}`
       )
       .join("\n\n");
 
