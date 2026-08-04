@@ -87,6 +87,9 @@ jobagent/
     │   ├── answers.ts         # application drafting: deterministic → QA bank → AI
     │   ├── submit.ts          # programmatic submission (Greenhouse/Lever) + fallback
     │   ├── resume.ts          # PDF → structured JSON via Gemini
+    │   ├── latex.ts           # tectonic compile + page count (pdf-lib)
+    │   ├── tailor.ts          # per-job resume tailoring with 1-page validation
+    │   ├── copilot.ts         # review-page natural-language edit engine
     │   └── seed.ts            # seedCompaniesIfEmpty
     ├── worker/index.ts        # cron loop
     ├── components/ui.tsx      # Card, Badge, ScoreBadge, eligibilityBadge, button/input styles
@@ -128,6 +131,7 @@ Timestamps are stored as unix epoch integers (Drizzle `mode: "timestamp"`). JSON
 - `formSchema`: JSON `{ introspected: boolean, fields: FormField[] }` — what the form looked like at draft time.
 - `jdSnapshot`: the job description frozen at draft time (postings get edited/removed).
 - `coverLetter`, `notes`, `nextActionAt` + `nextActionNote` (drives follow-up reminders), `submittedAt`.
+- `tailoredResumeLatex` + `tailoredResumePdf`: the per-job resume (§8.6); null → submissions attach the default uploaded resume.
 
 ### `applicationAnswers` — one row per form field
 `fieldKey` (ATS-native input name, used for programmatic submit), `label`, `fieldType` (`text|textarea|select|multiselect|boolean|file`), `options` (JSON for selects), `required`, `answer`, `aiGenerated`, `confidence` (`high|medium|low`), `sortOrder`. Cascade-deleted with the application; wiped and regenerated on re-draft.
@@ -136,7 +140,7 @@ Timestamps are stored as unix epoch integers (Drizzle `mode: "timestamp"`). JSON
 `type` ∈ `created | status_change | submitted | note | interview | reminder`, plus free-text `detail`. Written by the drafting engine, submit engine, and status changes.
 
 ### `profile` — single-user key-value store (JSON values)
-Well-known keys: `fullName`, `email`, `phone`, `location`, `links` (`{linkedin, github, website}`), `workAuthorization`, `salaryExpectation`, `noticePeriod`, `yearsExperience`, `skills`, `headline`, `extraContext`. Resume parsing seeds empty keys; the Profile page edits them.
+Well-known keys: `fullName`, `email`, `phone`, `location`, `links` (`{linkedin, github, website}`), `workAuthorization`, `salaryExpectation`, `noticePeriod`, `yearsExperience`, `skills`, `headline`, `extraContext`, `resumeLatex` (base LaTeX source that enables per-job tailoring, §8.6). Resume parsing seeds empty keys; the Profile page edits them.
 
 ### `resumes`
 Uploaded PDFs (files in `data/resumes/`, metadata + parsed JSON here). Exactly one `isDefault` — it's attached to submissions and grounds the candidate summary.
@@ -146,6 +150,9 @@ Uploaded PDFs (files in `data/resumes/`, metadata + parsed JSON here). Exactly o
 
 ### `scrapeRuns` — observability
 One row per source per run: `found`, `added`, `error`, timings. Shown on the Today dashboard.
+
+### `locks` — cross-process advisory locks
+One row per lock name (`pipeline` is the only one today): `owner` (pid+nonce), `acquiredAt`, `heartbeatAt`. See §6.
 
 ### `settings` — runtime config KV
 `geminiApiKey`, `scoringModel`, `writerModel`, `queueThreshold`, `maxQueuedPerCompany`, `scrapeIntervalHours`, `maxScoringPerRun`. Defaults in `src/lib/settings.ts` (`DEFAULTS`). `GEMINI_API_KEY` env var takes precedence over the stored key.
@@ -178,7 +185,7 @@ Failure isolation: each company board and each aggregator is try/caught individu
 
 ## 6. The pipeline (`src/lib/pipeline.ts`)
 
-`runPipeline()` — guarded by an in-process `running` flag (409 from the API if already running):
+`runPipeline()` — guarded by an in-process `running` flag **and a cross-process advisory lock** (`locks` table row via `src/lib/lock.ts`, heartbeat every 60 s, stealable after 5 min without a heartbeat so a crashed holder self-heals). The worker and the Next.js server share the DB but not memory — the lock is what stops them scoring the same jobs twice. The API returns 409 if either process is running a pipeline:
 
 1. **ATS sweep** — every `active` company board, sequentially with a 150 ms gap (polite, avoids rate limiting). Per-board success resets `errorCount`; failure increments it (3 strikes → `active = false`).
 2. **Ingest** (`ingest.ts`) — upsert on `(source, externalId)`. Existing jobs: bump `lastSeenAt`, clear `closed`. New jobs: insert with capped field lengths. Returns new-job IDs.
@@ -240,6 +247,11 @@ Expect programmatic submit to work on a minority of boards and shrink over time 
 ### 8.5 Resume parsing (`src/lib/resume.ts`)
 Upload (PDF only) → stored in `data/resumes/` → sent inline (base64) to Gemini with a JSON schema → structured `{fullName, contact, links, summary, skills, experience[{company,title,dates,highlights}], education}`. The prompt demands **verbatim highlight extraction** (no embellishment) because these strings ground future answers. Parsed fields seed empty profile keys (`onConflictDoNothing` — never overwrites your edits). Newest upload becomes the default.
 
+### 8.6 Per-job resume tailoring (`src/lib/tailor.ts` + `src/lib/latex.ts`) & the review copilot (`src/lib/copilot.ts`)
+When the profile holds a base LaTeX resume (`resumeLatex`, pasted on the Profile page), drafting also produces a per-job copy. The editor is deliberately conservative: the **skills section** is the main target (surface what the JD asks for, but only skills evidenced in the resume/profile — fabrication is prohibited by prompt *and* the skill list is passed explicitly); elsewhere only bullet reordering/tightening. Validation gauntlet, all code: **bounded diff** (>30% changed lines → rejected as overreach) → **compiles** (tectonic, `brew install tectonic`) → **exactly one page** (counted with pdf-lib). Failures feed back to the model for up to 3 attempts; final failure is soft — the application keeps the default resume. Compiled PDFs live in `data/resumes/tailored/app-{id}.pdf` and are attached by the submit engine in place of the default resume.
+
+The **copilot** on the review page takes plain-language instructions ("add Kafka to the resume skills", "remove the last bullet", "make the cover letter mention X", "set the notice period answer to 2 weeks") and returns structured edits — cover letter, resume LaTeX, and/or answer changes by fieldKey — applied server-side. Resume edits pass the same compile + one-page gauntlet (one feedback retry); a failed edit is reported in the reply, never silently saved. Every exchange logs a `copilot` event with what changed.
+
 ## 9. API surface (all under `src/app/api/`)
 
 | route | methods | purpose |
@@ -251,6 +263,9 @@ Upload (PDF only) → stored in `data/resumes/` → sent inline (base64) to Gemi
 | `/api/applications?status=` | GET | list (single status or comma list) joined with jobs |
 | `/api/applications/[id]` | GET / PATCH | full detail (app+job+answers+events) / update status·notes·nextAction·coverLetter (status changes auto-log events) |
 | `/api/applications/[id]/submit` | POST | `{mode:"auto"}` → try programmatic, may return `{assisted:true,reason}`; `{mode:"manual"}` → mark submitted |
+| `/api/applications/[id]/tailor` | POST | (re)generate the tailored resume → `{applied, changes, reason?}` |
+| `/api/applications/[id]/resume` | GET | the compiled tailored-resume PDF |
+| `/api/applications/[id]/copilot` | POST | `{message, history?}` → apply natural-language edits → `{reply, updated}` |
 | `/api/answers/[id]` | PATCH | edit an answer; `remember:true` → QA bank |
 | `/api/profile` | GET / PUT | full KV / bulk upsert |
 | `/api/qa` | GET / POST / DELETE | answer bank CRUD |
@@ -265,7 +280,7 @@ No auth anywhere — the app binds to localhost for one user. **Do not port-forw
 
 - **Today (`/`)** — stat cards (ready for review / queued / follow-ups due), review shortcuts, due follow-ups, top of queue, scrape-run health table, the **Scrape & score now** button. Polls every 15 s.
 - **Jobs (`/jobs`)** — tabbed ranked feed. Each card: score badge (green ≥75 / yellow ≥55 / red), eligibility badge, visa badge, role category, source, salary; **Why?** expands the model's reasons; **Draft application** → drafts and routes to the review screen; Dismiss/Restore.
-- **Application review (`/applications/[id]`)** — the money screen: status selector, submit panel (auto-submit where supported / open form / mark-as-applied), every answer as an editor (type-appropriate input, confidence badge, copy button, save + remember), cover-letter editor, next-action reminder, notes, event timeline, JD snapshot.
+- **Application review (`/applications/[id]`)** — the money screen: status selector, submit panel (auto-submit where supported / open form / mark-as-applied), the **copilot box** (plain-language edits to resume/cover letter/answers), the **resume card** (tailored-vs-default status, view PDF, re-tailor), every answer as an editor (type-appropriate input, confidence badge, copy button, save + remember), cover-letter editor, next-action reminder, notes, event timeline, JD snapshot.
 - **Pipeline (`/board`)** — HTML5 drag-and-drop kanban over the application statuses; cards show overdue follow-up warnings; status changes persist via PATCH and log events.
 - **Analytics (`/analytics`)** — submitted count, response rate (responded = screening+interviewing+offer over submitted), interviews, offers; by-source table; per-week submissions; funnel stats (discovered → scored → queued → flagged).
 - **Profile (`/profile`)** — resume upload/parse status, basics, links, the "what applications always ask" intake (work authorization free-text is deliberately precise-form — it's fed verbatim to the AI), extra context, and the answer bank editor.
@@ -278,6 +293,7 @@ Shared primitives live in `src/components/ui.tsx`; save-on-blur is the form idio
 - **Scheduling**: worker cron `5 */N * * *`. Change N in Settings (worker restart required — it reads the setting at boot). For auto-start on login, wrap `npm run worker` in a LaunchAgent plist.
 - **Gemini budget math**: scoring = ~15 calls/120 jobs; drafting ≈ 2 calls/application. At free-tier ~250 requests/day that's roughly 120 scored jobs + ~40 drafted applications — above the 50/day review target. The throttle (§7) keeps RPM legal; RPD exhaustion just delays scoring to the next run.
 - **Logging**: `src/lib/log.ts` — a tiny logfmt-style console logger (`2026-08-04T12:00:00.000Z INFO [pipeline] ats sweep done boards=118 found=3402 ms=41250`). Scopes: `worker`, `pipeline` (run/sweep/ingest/discovery, per-board failures + strike counts), `yc` (slice/detail fetch health), `scoring` (batch progress, quota aborts), `gemini` (retries/backoff), `draft` (form fetch, deterministic/QA-bank/AI answer split, timings), `submit` (attempts, assisted fallbacks with reason). Logs go to the stdout/stderr of whichever process ran the code: the worker terminal for cron runs, the `next dev` terminal for UI-triggered actions. Grep by scope, e.g. `npm run worker 2>&1 | grep '\[scoring\]'`.
+- **LaTeX**: resume tailoring needs `tectonic` on PATH (`brew install tectonic`; the first compile downloads packages, later ones are fast). Without it, tailoring fails soft and applications use the default PDF.
 - **Reset scoring** (e.g. after changing the prompt): `sqlite3 data/jobagent.db "UPDATE jobs SET scored_at=NULL, score=NULL WHERE feed_status='new';"`
 - **Postgres migration path**: swap the Drizzle driver/dialect, re-run `db:push`, replace the two raw-SQL analytics queries (`strftime` → `to_char`). Schema and app code otherwise carry over.
 
@@ -290,7 +306,7 @@ Shared primitives live in `src/components/ui.tsx`; save-on-blur is the form idio
 5. **No inbox integration yet** — ghosted/rejected/screening transitions are manual until the v1.5 Gmail sync.
 6. **36 of the 125 seed board tokens were stale** at first run — expected; the 3-strike system retires them and discovery/manual adds replace them.
 7. **YC jobs are snapshot-once and assisted-only** — the detail page is fetched a single time (a later JD edit on YC's side isn't picked up), and applying requires a Work at a Startup login, so programmatic submit is permanently impossible for this source.
-8. **Single process assumptions** — the `running` flag is in-process; don't run two workers. (The UI trigger and worker colliding is possible but harmless: SQLite WAL + upserts make duplicate ingestion idempotent.)
+8. **Pipeline mutual exclusion is heartbeat-based** — the DB lock (§6) prevents the UI trigger and the worker from running (and double-scoring) simultaneously. The one rough edge: killing a process mid-run leaves its lock row until the 5-minute heartbeat staleness window passes, so a retrigger inside that window gets a 409 — wait it out or delete the `locks` row.
 
 ## 13. Roadmap
 

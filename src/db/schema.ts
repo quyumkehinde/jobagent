@@ -101,6 +101,8 @@ export const applications = sqliteTable(
     coverLetter: text("cover_letter"),
     jdSnapshot: text("jd_snapshot"), // job description at time of application
     formSchema: text("form_schema"), // JSON: the ATS form fields we discovered
+    tailoredResumeLatex: text("tailored_resume_latex"), // per-job edited LaTeX (null = default resume)
+    tailoredResumePdf: text("tailored_resume_pdf"), // compiled filename under data/resumes/tailored/
     submittedAt: integer("submitted_at", { mode: "timestamp" }),
     nextActionAt: integer("next_action_at", { mode: "timestamp" }),
     nextActionNote: text("next_action_note"),
@@ -194,4 +196,12 @@ export const scrapeRuns = sqliteTable("scrape_runs", {
 export const settings = sqliteTable("settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(), // JSON
+});
+
+// ---------- Advisory locks (cross-process mutual exclusion, e.g. the pipeline) ----------
+export const locks = sqliteTable("locks", {
+  name: text("name").primaryKey(),
+  owner: text("owner").notNull(), // pid + nonce of the holding process
+  acquiredAt: integer("acquired_at", { mode: "timestamp" }).notNull(),
+  heartbeatAt: integer("heartbeat_at", { mode: "timestamp" }).notNull(), // stale heartbeat -> lock is stealable
 });

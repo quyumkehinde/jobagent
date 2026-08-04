@@ -14,7 +14,13 @@ const log = createLogger("submit");
 
 export class SubmitNotPossibleError extends Error {}
 
-async function getDefaultResumePath(): Promise<{ path: string; name: string } | null> {
+// The tailored per-job PDF wins when it exists; otherwise the default uploaded resume.
+async function getResumeForApplication(applicationId: number): Promise<{ path: string; name: string } | null> {
+  const app = await db.query.applications.findFirst({ where: eq(tables.applications.id, applicationId) });
+  if (app?.tailoredResumePdf) {
+    const p = path.join(process.cwd(), "data", "resumes", "tailored", app.tailoredResumePdf);
+    if (fs.existsSync(p)) return { path: p, name: app.tailoredResumePdf };
+  }
   const resume = await db.query.resumes.findFirst({ where: eq(tables.resumes.isDefault, true) });
   if (!resume) return null;
   const p = path.join(process.cwd(), "data", "resumes", resume.fileName);
@@ -50,7 +56,7 @@ export async function submitLever(
   if (!m) throw new SubmitNotPossibleError("not a recognizable Lever posting URL");
   const applyUrl = `https://jobs.lever.co/${m[1]}/${m[2]}/apply`;
 
-  const resume = await getDefaultResumePath();
+  const resume = await getResumeForApplication(applicationId);
   const fd = buildLeverForm(answers, resume);
 
   const res = await fetch(applyUrl, {
@@ -101,7 +107,7 @@ export async function submitGreenhouse(
     const key = a.fieldKey.startsWith("job_application") ? a.fieldKey : a.fieldKey;
     fd.append(key, a.answer);
   }
-  const resume = await getDefaultResumePath();
+  const resume = await getResumeForApplication(applicationId);
   if (resume) {
     const buf = fs.readFileSync(resume.path);
     fd.append("resume", new Blob([buf], { type: "application/pdf" }), resume.name);

@@ -4,6 +4,7 @@ import { generateJSON } from "./gemini";
 import { buildCandidateSummary, getProfileValue } from "./candidate";
 import { getSetting, DEFAULTS } from "./settings";
 import { FormField, fetchFormForJob } from "./forms";
+import { tailorResume } from "./tailor";
 import { createLogger, startTimer } from "./log";
 
 const log = createLogger("draft");
@@ -200,6 +201,15 @@ export async function draftApplication(jobId: number): Promise<DraftResult> {
       .update(tables.applications)
       .set({ coverLetter: cover.coverLetter })
       .where(eq(tables.applications.id, app.id));
+  }
+
+  // Per-job resume tailoring — best-effort: any failure keeps the default resume
+  try {
+    const tailored = await tailorResume(app.id);
+    if (!tailored.applied && tailored.reason !== "no base LaTeX resume in Profile")
+      log.warn("resume tailoring skipped", { reason: tailored.reason });
+  } catch (err) {
+    log.warn("resume tailoring failed", { error: String(err).slice(0, 200) });
   }
 
   const answers = await db.query.applicationAnswers.findMany({

@@ -12,9 +12,11 @@ import { RawJob } from "@/connectors/types";
 import { ingestJobs } from "./ingest";
 import { scoreUnscored } from "./scoring";
 import { createLogger, startTimer } from "./log";
+import { acquireLock, releaseLock, heartbeatLock, isLockHeld } from "./lock";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const log = createLogger("pipeline");
+const PIPELINE_LOCK = "pipeline";
 
 async function recordRun(source: string, fn: () => Promise<RawJob[]>): Promise<RawJob[]> {
   const [run] = await db.insert(tables.scrapeRuns).values({ source }).returning({ id: tables.scrapeRuns.id });
@@ -93,7 +95,12 @@ let running = false;
 
 export async function runPipeline(): Promise<PipelineResult> {
   if (running) throw new Error("pipeline already running");
+  // cross-process guard: the worker and the Next.js server share one DB but not memory
+  if (!(await acquireLock(PIPELINE_LOCK)))
+    throw new Error("pipeline already running in another process (worker or dev server)");
   running = true;
+  const heartbeat = setInterval(() => heartbeatLock(PIPELINE_LOCK).catch(() => {}), 60_000);
+  heartbeat.unref?.();
   const elapsed = startTimer();
   log.info("run start");
   try {
@@ -140,10 +147,13 @@ export async function runPipeline(): Promise<PipelineResult> {
     log.error("run failed", { ms: elapsed(), error: String(err).slice(0, 300) });
     throw err;
   } finally {
+    clearInterval(heartbeat);
     running = false;
+    await releaseLock(PIPELINE_LOCK);
   }
 }
 
-export function isPipelineRunning() {
-  return running;
+// True if a pipeline is running in ANY process (this one or the other side of the DB).
+export async function isPipelineRunning(): Promise<boolean> {
+  return running || isLockHeld(PIPELINE_LOCK);
 }

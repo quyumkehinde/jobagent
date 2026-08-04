@@ -115,6 +115,24 @@ export default function ProfilePage() {
             onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])}
           />
         </label>
+        <details className="mt-4" open={!str("resumeLatex")}>
+          <summary className="cursor-pointer text-sm font-medium">
+            LaTeX source (enables per-job tailored resumes){" "}
+            {str("resumeLatex") ? <Badge tone="green">set</Badge> : <Badge tone="yellow">not set</Badge>}
+          </summary>
+          <p className="text-xs text-zinc-500 mt-2 mb-1">
+            Paste your one-page resume&apos;s LaTeX source. When drafting an application, the AI makes a per-job copy —
+            mainly resurfacing skills the job description asks for — compiles it, and verifies it still fits one page.
+            No source, no tailoring: applications just use your default PDF above.
+          </p>
+          <textarea
+            className={`${input} mt-1 min-h-64 font-mono text-xs`}
+            defaultValue={str("resumeLatex")}
+            placeholder={"\\documentclass{article}\n..."}
+            spellCheck={false}
+            onBlur={(e) => e.target.value !== str("resumeLatex") && save({ resumeLatex: e.target.value })}
+          />
+        </details>
       </Card>
 
       <Card className="space-y-3">

@@ -24,6 +24,7 @@ interface AppData {
     nextActionAt: string | null;
     nextActionNote: string | null;
     submittedAt: string | null;
+    tailoredResumePdf: string | null;
   };
   job: { id: number; title: string; companyName: string; url: string; applyUrl: string | null; source: string; description: string | null };
   answers: Answer[];
@@ -150,6 +151,10 @@ export default function ApplicationPage({ params }: { params: Promise<{ id: stri
         </Card>
       )}
 
+      <Copilot appId={app.id} onApplied={load} />
+
+      <ResumeCard appId={app.id} tailoredPdf={app.tailoredResumePdf} onChanged={load} />
+
       <section>
         <h2 className="text-lg font-semibold mb-2">Application answers</h2>
         <div className="space-y-3">
@@ -233,6 +238,129 @@ export default function ApplicationPage({ params }: { params: Promise<{ id: stri
         </details>
       )}
     </div>
+  );
+}
+
+// Quick-feedback copilot: "add Kafka to the resume skills", "make the cover letter
+// mention X", "set notice period to 2 weeks" — edits apply server-side, page reloads data.
+function Copilot({ appId, onApplied }: { appId: number; onApplied: () => void }) {
+  const [messages, setMessages] = useState<{ role: "user" | "assistant"; text: string }[]>([]);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const send = async () => {
+    const message = draft.trim();
+    if (!message || busy) return;
+    setDraft("");
+    setBusy(true);
+    setMessages((m) => [...m, { role: "user", text: message }]);
+    try {
+      const res = await fetch(`/api/applications/${appId}/copilot`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message, history: messages.slice(-6) }),
+      });
+      const data = await res.json();
+      setMessages((m) => [...m, { role: "assistant", text: data.reply || data.error || "something went wrong" }]);
+      onApplied();
+    } catch (err) {
+      setMessages((m) => [...m, { role: "assistant", text: `Error: ${String(err)}` }]);
+    }
+    setBusy(false);
+  };
+
+  return (
+    <Card className="border-indigo-900/60 bg-indigo-950/20">
+      <h3 className="font-semibold mb-1">Copilot</h3>
+      <p className="text-xs text-zinc-500 mb-2">
+        Quick edits in plain words — &ldquo;add Kafka to the resume skills&rdquo;, &ldquo;remove the last bullet from
+        the resume&rdquo;, &ldquo;make the cover letter mention the payments migration&rdquo;, &ldquo;set the notice
+        period answer to 2 weeks&rdquo;.
+      </p>
+      {messages.length > 0 && (
+        <div className="space-y-1.5 mb-2 max-h-56 overflow-y-auto text-sm">
+          {messages.map((m, i) => (
+            <div key={i} className={m.role === "user" ? "text-zinc-300" : "text-indigo-300"}>
+              <span className="text-zinc-500">{m.role === "user" ? "you: " : "copilot: "}</span>
+              {m.text}
+            </div>
+          ))}
+          {busy && <div className="text-zinc-500 animate-pulse">copilot is editing…</div>}
+        </div>
+      )}
+      <div className="flex gap-2">
+        <input
+          className={input}
+          placeholder="Tell the copilot what to change…"
+          value={draft}
+          disabled={busy}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && send()}
+        />
+        <button className={btnPrimary} onClick={send} disabled={busy || !draft.trim()}>
+          {busy ? "…" : "Send"}
+        </button>
+      </div>
+    </Card>
+  );
+}
+
+function ResumeCard({
+  appId,
+  tailoredPdf,
+  onChanged,
+}: {
+  appId: number;
+  tailoredPdf: string | null;
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const tailor = async () => {
+    setBusy(true);
+    setError(null);
+    const res = await fetch(`/api/applications/${appId}/tailor`, { method: "POST" });
+    const data = await res.json();
+    setBusy(false);
+    if (!data.applied) setError(data.reason || data.error || "tailoring failed");
+    onChanged();
+  };
+
+  return (
+    <Card>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-2">
+          <h3 className="font-semibold">Resume</h3>
+          {tailoredPdf ? (
+            <Badge tone="green">tailored for this job · 1 page ✓</Badge>
+          ) : (
+            <Badge>default resume</Badge>
+          )}
+        </div>
+        <div className="flex gap-2">
+          {tailoredPdf && (
+            <a
+              href={`/api/applications/${appId}/resume`}
+              target="_blank"
+              rel="noreferrer"
+              className={btnSecondary}
+            >
+              View PDF ↗
+            </a>
+          )}
+          <button className={btnSecondary} onClick={tailor} disabled={busy}>
+            {busy ? "Tailoring… (~30s)" : tailoredPdf ? "Re-tailor from base" : "Tailor for this job"}
+          </button>
+        </div>
+      </div>
+      {error && (
+        <p className="text-sm text-amber-300 mt-2">
+          {error}
+          {error.includes("no base LaTeX") && <> — paste your resume&apos;s LaTeX source on the Profile page first.</>}
+        </p>
+      )}
+    </Card>
   );
 }
 

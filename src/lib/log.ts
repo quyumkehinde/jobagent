@@ -1,5 +1,6 @@
 // Tiny console logger shared by the worker and API routes. Lines are logfmt-ish so they
-// stay greppable: 2026-08-04T12:00:00.000Z INFO [pipeline] ats sweep done boards=118 found=3402 ms=41250
+// stay greppable, and carry the pid so overlapping worker/dev-server output is tellable apart:
+// 2026-08-04T12:00:00.000Z INFO 84523 [pipeline] ats sweep done boards=118 found=3402 ms=41250
 type Fields = Record<string, unknown>;
 
 function fmtFields(fields?: Fields): string {
@@ -14,7 +15,7 @@ function fmtFields(fields?: Fields): string {
 }
 
 function line(level: string, scope: string, msg: string, fields?: Fields): string {
-  return `${new Date().toISOString()} ${level} [${scope}] ${msg}${fmtFields(fields)}`;
+  return `${new Date().toISOString()} ${level} ${process.pid} [${scope}] ${msg}${fmtFields(fields)}`;
 }
 
 export interface Logger {
