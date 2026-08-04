@@ -1,36 +1,38 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# JobAgent
 
-## Getting Started
+A local-first job-search machine: scrapes jobs from ATS APIs and aggregators, scores every posting against your profile with Gemini, drafts complete applications grounded in your real experience, and tracks everything through a kanban pipeline.
 
-First, run the development server:
+Single user, runs on your machine, all data in `data/jobagent.db`.
+
+📖 **Full architecture & internals:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+
+## Quick start
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run db:push              # create the SQLite schema
+npm run seed                 # load ~125 company ATS boards
+cp .env.example .env.local   # add your Gemini API key (or set it in Settings)
+npm run dev                  # UI at http://localhost:3000
+npm run worker               # separate terminal: scrape+score every 3h
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+First run, in the UI:
+1. **Profile** → upload your resume (PDF) and fill in work authorization, salary, notice period, links.
+2. **Settings** → confirm your Gemini key.
+3. **Today** → hit **Scrape & score now**.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Commands
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| command | what it does |
+|---|---|
+| `npm run dev` | UI + API at localhost:3000 |
+| `npm run worker` | scheduled scrape+score loop |
+| `npm run db:push` | apply schema changes |
+| `npm run seed` | seed company boards (no-op if already seeded) |
+| `npx tsx scripts/smoke.ts` | live-test all six connectors |
 
-## Learn More
+## Roadmap
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- **v1.5:** Gmail status sync, per-job tailored resume PDFs, Indeed/Google Jobs, LinkedIn.
+- **v2:** Chrome extension that autofills any application form from the drafted answers.
