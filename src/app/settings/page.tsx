@@ -9,6 +9,7 @@ interface Settings {
   scoringModel: string;
   writerModel: string;
   queueThreshold: number;
+  maxQueuedPerCompany: number;
   scrapeIntervalHours: number;
   maxScoringPerRun: number;
 }
@@ -120,6 +121,15 @@ export default function SettingsPage() {
               className={`${input} mt-1`}
               defaultValue={settings.queueThreshold}
               onBlur={(e) => save({ queueThreshold: Number(e.target.value) })}
+            />
+          </label>
+          <label className="block">
+            <span className="text-sm text-zinc-400">Max queued per company</span>
+            <input
+              type="number"
+              className={`${input} mt-1`}
+              defaultValue={settings.maxQueuedPerCompany}
+              onBlur={(e) => save({ maxQueuedPerCompany: Number(e.target.value) })}
             />
           </label>
           <label className="block">

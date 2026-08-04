@@ -8,6 +8,7 @@ export async function GET() {
     scoringModel: await getSetting("scoringModel", DEFAULTS.scoringModel),
     writerModel: await getSetting("writerModel", DEFAULTS.writerModel),
     queueThreshold: await getSetting("queueThreshold", DEFAULTS.queueThreshold),
+    maxQueuedPerCompany: await getSetting("maxQueuedPerCompany", DEFAULTS.maxQueuedPerCompany),
     scrapeIntervalHours: await getSetting("scrapeIntervalHours", DEFAULTS.scrapeIntervalHours),
     maxScoringPerRun: await getSetting("maxScoringPerRun", DEFAULTS.maxScoringPerRun),
   };
@@ -21,6 +22,7 @@ export async function PUT(req: NextRequest) {
     "scoringModel",
     "writerModel",
     "queueThreshold",
+    "maxQueuedPerCompany",
     "scrapeIntervalHours",
     "maxScoringPerRun",
   ];

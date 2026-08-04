@@ -1,5 +1,5 @@
 import { db, tables } from "@/db";
-import { eq, isNull, and } from "drizzle-orm";
+import { eq, isNull, isNotNull, and, inArray } from "drizzle-orm";
 import { generateJSON } from "./gemini";
 import { buildCandidateSummary } from "./candidate";
 import { getSetting, DEFAULTS } from "./settings";
@@ -7,6 +7,9 @@ import { createLogger, startTimer } from "./log";
 
 const BATCH_SIZE = 8;
 const log = createLogger("scoring");
+
+// eligibility values that are allowed into the review queue
+const QUEUE_ELIGIBLE = ["remote-worldwide", "remote-region-restricted", "onsite-europe", "unknown"];
 
 interface ScoreResult {
   index: number;
@@ -60,9 +63,58 @@ const SYSTEM = `You are a precise job-matching engine for one specific candidate
 - visaSignal: does the company/job sponsor visas or offer relocation? "yes" only if stated in the posting; "likely" if the company is known to sponsor; "no" if posting says no sponsorship.
 - Be strict about eligibility: read location requirements carefully. When the posting is ambiguous, use "unknown" rather than guessing.`;
 
+// Enforces the per-company queue cap: for each company, only its `cap` best-scoring
+// queue-worthy jobs stay queued; the rest are demoted to `new`. Demoted jobs keep their
+// score, so if a slot frees up later (dismiss/draft/re-run) the next-best is promoted
+// back automatically. Only ever moves jobs between `new` and `queued` — dismissed and
+// applied jobs are untouched, and currently-queued jobs win score ties (no churn).
+export async function rebalanceCompanyQueues(
+  threshold: number,
+  cap: number
+): Promise<{ demoted: number; promoted: number }> {
+  const rows = await db.query.jobs.findMany({
+    where: and(
+      inArray(tables.jobs.feedStatus, ["queued", "new"]),
+      isNotNull(tables.jobs.scoredAt),
+      eq(tables.jobs.closed, false)
+    ),
+    columns: { id: true, companyName: true, score: true, eligibility: true, feedStatus: true },
+  });
+
+  const byCompany = new Map<string, typeof rows>();
+  for (const j of rows) {
+    // queued jobs always occupy a slot; `new` jobs compete only if queue-worthy
+    const queueWorthy =
+      j.feedStatus === "queued" ||
+      ((j.score ?? 0) >= threshold && QUEUE_ELIGIBLE.includes(j.eligibility ?? ""));
+    if (!queueWorthy) continue;
+    const key = j.companyName.trim().toLowerCase();
+    const list = byCompany.get(key) ?? [];
+    list.push(j);
+    byCompany.set(key, list);
+  }
+
+  let demoted = 0;
+  let promoted = 0;
+  const queuedFirst = (j: { feedStatus: string }) => (j.feedStatus === "queued" ? 0 : 1);
+  for (const list of byCompany.values()) {
+    list.sort((a, b) => (b.score ?? 0) - (a.score ?? 0) || queuedFirst(a) - queuedFirst(b) || a.id - b.id);
+    for (const [i, j] of list.entries()) {
+      const want = i < cap ? "queued" : "new";
+      if (j.feedStatus === want) continue;
+      await db.update(tables.jobs).set({ feedStatus: want }).where(eq(tables.jobs.id, j.id));
+      if (want === "queued") promoted++;
+      else demoted++;
+    }
+  }
+  if (demoted || promoted) log.info("company queues rebalanced", { cap, demoted, promoted });
+  return { demoted, promoted };
+}
+
 export async function scoreUnscored(limit?: number): Promise<{ scored: number; queued: number }> {
   const maxPerRun = limit ?? (await getSetting("maxScoringPerRun", DEFAULTS.maxScoringPerRun));
   const threshold = await getSetting("queueThreshold", DEFAULTS.queueThreshold);
+  const perCompanyCap = await getSetting("maxQueuedPerCompany", DEFAULTS.maxQueuedPerCompany);
   const model = await getSetting("scoringModel", DEFAULTS.scoringModel);
 
   const unscored = await db.query.jobs.findMany({
@@ -72,6 +124,8 @@ export async function scoreUnscored(limit?: number): Promise<{ scored: number; q
   });
   if (unscored.length === 0) {
     log.info("nothing to score");
+    // still rebalance: dismissals/drafts since the last run may have freed queue slots
+    await rebalanceCompanyQueues(threshold, perCompanyCap);
     return { scored: 0, queued: 0 };
   }
 
@@ -100,9 +154,7 @@ export async function scoreUnscored(limit?: number): Promise<{ scored: number; q
       for (const r of results) {
         const job = batch[r.index];
         if (!job) continue;
-        const eligible = ["remote-worldwide", "remote-region-restricted", "onsite-europe", "unknown"].includes(
-          r.eligibility
-        );
+        const eligible = QUEUE_ELIGIBLE.includes(r.eligibility);
         const shouldQueue = r.score >= threshold && eligible;
         await db
           .update(tables.jobs)
@@ -134,6 +186,8 @@ export async function scoreUnscored(limit?: number): Promise<{ scored: number; q
       }
     }
   }
-  log.info("done", { scored, queued, ms: elapsed() });
-  return { scored, queued };
+  const { demoted, promoted } = await rebalanceCompanyQueues(threshold, perCompanyCap);
+  const netQueued = Math.max(0, queued - demoted + promoted);
+  log.info("done", { scored, queued: netQueued, ms: elapsed() });
+  return { scored, queued: netQueued };
 }

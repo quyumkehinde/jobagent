@@ -25,6 +25,7 @@ export const DEFAULTS = {
   scoringModel: "gemini-3.6-flash",
   writerModel: "gemini-3.6-flash",
   queueThreshold: 55, // score >= this -> auto-queued into review feed
+  maxQueuedPerCompany: 5, // per company, keep only the N best-scoring jobs queued
   scrapeIntervalHours: 3,
   maxScoringPerRun: 120, // cap Gemini scoring calls per scrape run (batched 8/call)
 };

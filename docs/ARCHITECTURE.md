@@ -148,7 +148,7 @@ Uploaded PDFs (files in `data/resumes/`, metadata + parsed JSON here). Exactly o
 One row per source per run: `found`, `added`, `error`, timings. Shown on the Today dashboard.
 
 ### `settings` — runtime config KV
-`geminiApiKey`, `scoringModel`, `writerModel`, `queueThreshold`, `scrapeIntervalHours`, `maxScoringPerRun`. Defaults in `src/lib/settings.ts` (`DEFAULTS`). `GEMINI_API_KEY` env var takes precedence over the stored key.
+`geminiApiKey`, `scoringModel`, `writerModel`, `queueThreshold`, `maxQueuedPerCompany`, `scrapeIntervalHours`, `maxScoringPerRun`. Defaults in `src/lib/settings.ts` (`DEFAULTS`). `GEMINI_API_KEY` env var takes precedence over the stored key.
 
 ## 5. Connectors (`src/connectors/`)
 
@@ -197,6 +197,7 @@ The pipeline is triggered three ways: worker cron, `POST /api/pipeline` (fire-an
 - Uses Gemini **JSON mode** (`responseSchema`) so output is machine-parseable by construction: per job → `{ index, score, eligibility, visaSignal, roleCategory, reasons[≤3] }`.
 - The system prompt encodes the hard rules: ineligible jobs score <30 regardless of skill fit; eligibility must be read strictly from location language; ambiguity → `unknown` (which stays eligible — better to over-queue than silently drop); visa `yes` only if stated in the posting.
 - **Queueing decision** (code, not model): `score ≥ queueThreshold` **AND** eligibility ∈ {remote-worldwide, remote-region-restricted, onsite-europe, unknown} → `feedStatus = 'queued'`. `country-restricted` can never queue — it lands in the Flagged tab.
+- **Per-company cap** (`rebalanceCompanyQueues`, runs after every scoring pass — even a no-op one): each company (matched on normalized `companyName`) keeps at most `maxQueuedPerCompany` (default 5) jobs queued, best score first; the overflow is demoted back to `new`. Demoted jobs keep their scores, so when a slot frees up (dismiss, draft, higher scorer leaves) the next-best is promoted automatically. Only `new ⇄ queued` transitions — dismissed/applied are never touched, and currently-queued jobs win score ties to avoid churn. Note a manually queued job competes on score like any other and can be demoted if the company is over cap.
 - Failure handling: a failed batch is logged and skipped; a 429/quota error aborts the scoring phase — unscored jobs simply wait for the next run. **Quota exhaustion is a delay, never data loss.**
 
 ### Gemini plumbing (`src/lib/gemini.ts`)
@@ -268,7 +269,7 @@ No auth anywhere — the app binds to localhost for one user. **Do not port-forw
 - **Pipeline (`/board`)** — HTML5 drag-and-drop kanban over the application statuses; cards show overdue follow-up warnings; status changes persist via PATCH and log events.
 - **Analytics (`/analytics`)** — submitted count, response rate (responded = screening+interviewing+offer over submitted), interviews, offers; by-source table; per-week submissions; funnel stats (discovered → scored → queued → flagged).
 - **Profile (`/profile`)** — resume upload/parse status, basics, links, the "what applications always ask" intake (work authorization free-text is deliberately precise-form — it's fed verbatim to the AI), extra context, and the answer bank editor.
-- **Settings (`/settings`)** — Gemini key (env-aware), model names, queue threshold, scrape interval, per-run scoring cap, and the company-board table (add/enable/disable, error visibility, seed/discovery/manual origin badges).
+- **Settings (`/settings`)** — Gemini key (env-aware), model names, queue threshold, per-company queue cap, scrape interval, per-run scoring cap, and the company-board table (add/enable/disable, error visibility, seed/discovery/manual origin badges).
 
 Shared primitives live in `src/components/ui.tsx`; save-on-blur is the form idiom throughout.
 
