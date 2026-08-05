@@ -85,6 +85,9 @@ export const jobs = sqliteTable(
     feedStatus: text("feed_status", { enum: ["new", "queued", "dismissed", "applied"] })
       .notNull()
       .default("new"),
+    // optional user-stated reason for dismissing — fed back into scoring as negative preference
+    dismissReason: text("dismiss_reason"),
+    dismissedAt: integer("dismissed_at", { mode: "timestamp" }),
     raw: text("raw"), // JSON of the original payload
   },
   (t) => [

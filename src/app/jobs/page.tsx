@@ -16,6 +16,7 @@ interface Job {
   eligibility: string | null;
   visaSignal: string | null;
   scoreReasons: string | null;
+  dismissReason: string | null;
   roleCategory: string | null;
   feedStatus: string;
   postedAt: string | null;
@@ -36,6 +37,8 @@ export default function JobsPage() {
   const [loading, setLoading] = useState(true);
   const [drafting, setDrafting] = useState<number | null>(null);
   const [expanded, setExpanded] = useState<number | null>(null);
+  const [dismissing, setDismissing] = useState<number | null>(null);
+  const [dismissReason, setDismissReason] = useState("");
   const router = useRouter();
 
   const load = useCallback(async () => {
@@ -50,12 +53,14 @@ export default function JobsPage() {
     load();
   }, [load]);
 
-  const setStatus = async (id: number, feedStatus: string) => {
+  const setStatus = async (id: number, feedStatus: string, reason?: string) => {
     await fetch(`/api/jobs/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ feedStatus }),
+      body: JSON.stringify({ feedStatus, ...(reason?.trim() ? { dismissReason: reason.trim() } : {}) }),
     });
+    setDismissing(null);
+    setDismissReason("");
     setJobs((js) => js.filter((j) => j.id !== id));
   };
 
@@ -115,6 +120,9 @@ export default function JobsPage() {
                   {j.location ? ` · ${j.location}` : ""}
                   {j.salary ? ` · ${j.salary}` : ""}
                 </div>
+                {j.feedStatus === "dismissed" && j.dismissReason && (
+                  <div className="text-xs text-amber-400/80 mt-1">dismissed: {j.dismissReason}</div>
+                )}
                 {expanded === j.id && j.scoreReasons && (
                   <ul className="mt-2 text-sm text-zinc-300 list-disc pl-5">
                     {(JSON.parse(j.scoreReasons) as string[]).map((r, i) => (
@@ -135,7 +143,13 @@ export default function JobsPage() {
                     Why?
                   </button>
                   {j.feedStatus !== "dismissed" ? (
-                    <button className={btnDanger} onClick={() => setStatus(j.id, "dismissed")}>
+                    <button
+                      className={btnDanger}
+                      onClick={() => {
+                        setDismissing(dismissing === j.id ? null : j.id);
+                        setDismissReason("");
+                      }}
+                    >
                       Dismiss
                     </button>
                   ) : (
@@ -146,6 +160,24 @@ export default function JobsPage() {
                 </div>
               </div>
             </div>
+            {dismissing === j.id && (
+              <div className="mt-3 flex gap-2 items-center border-t border-zinc-800 pt-3">
+                <input
+                  autoFocus
+                  className={`${input} flex-1`}
+                  placeholder="Why? (optional — teaches the scorer, e.g. “managerial role, needs 8+ yrs, I'm mid-level”)"
+                  value={dismissReason}
+                  onChange={(e) => setDismissReason(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && setStatus(j.id, "dismissed", dismissReason)}
+                />
+                <button className={btnDanger} onClick={() => setStatus(j.id, "dismissed", dismissReason)}>
+                  {dismissReason.trim() ? "Dismiss & remember" : "Dismiss"}
+                </button>
+                <button className={btnSecondary} onClick={() => setDismissing(null)}>
+                  Cancel
+                </button>
+              </div>
+            )}
           </Card>
         ))}
       </div>

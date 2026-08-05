@@ -62,7 +62,8 @@ const SYSTEM = `You are a precise job-matching engine for one specific candidate
   * onsite-other: onsite/hybrid anywhere else.
 - visaSignal: does the company/job sponsor visas or offer relocation? "yes" only if stated in the posting; "likely" if the company is known to sponsor; "no" if posting says no sponsorship.
 - An explicit statement that the position is NOT eligible for relocation assistance (or that the candidate must already be located in/authorized for the area) is a hard negative for any onsite/hybrid role the candidate would have to move for: set visaSignal "no" unless visa sponsorship is separately and explicitly stated, and score it like an ineligible job (<30). Statements in an [eligibility signals] block override your assumptions about the company.
-- Be strict about eligibility: read location requirements carefully. When the posting is ambiguous, use "unknown" rather than guessing.`;
+- Be strict about eligibility: read location requirements carefully. When the posting is ambiguous, use "unknown" rather than guessing.
+- If a RECENTLY DISMISSED list is provided, treat those stated reasons as strong negative preferences: a job matching a dismissed pattern (same seniority mismatch, role type, or constraint) must score low, with the pattern named in its reasons.`;
 
 // Enforces the per-company queue cap: for each company, only its `cap` best-scoring
 // queue-worthy jobs stay queued; the rest are demoted to `new`. Demoted jobs keep their
@@ -165,6 +166,22 @@ export async function scoreUnscored(limit?: number): Promise<{ scored: number; q
   log.info("start", { jobs: unscored.length, batches: totalBatches, model, threshold });
 
   const candidate = await buildCandidateSummary();
+
+  // The dismissal feedback loop: recent reasons the user gave when dismissing jobs are
+  // shown to the scorer as negative preferences ("managerial, needs 8+ years, I'm
+  // mid-level" should sink the next such match before the user ever sees it).
+  const dismissed = await db.query.jobs.findMany({
+    where: and(eq(tables.jobs.feedStatus, "dismissed"), isNotNull(tables.jobs.dismissReason)),
+    orderBy: desc(tables.jobs.dismissedAt),
+    limit: 15,
+    columns: { title: true, companyName: true, dismissReason: true },
+  });
+  const feedback = dismissed.length
+    ? `\n\nRECENTLY DISMISSED BY THE CANDIDATE (their stated reasons — score similar jobs LOW):\n${dismissed
+        .map((d) => `- "${d.title}" at ${d.companyName}: ${d.dismissReason}`)
+        .join("\n")}`
+    : "";
+
   let scored = 0;
   let queued = 0;
 
@@ -179,7 +196,7 @@ export async function scoreUnscored(limit?: number): Promise<{ scored: number; q
 
     try {
       const results = await generateJSON<ScoreResult[]>(
-        `CANDIDATE PROFILE:\n${candidate}\n\nScore each of the following ${batch.length} jobs for this candidate. Return one entry per job, using the job's index.\n\n${jobsText}`,
+        `CANDIDATE PROFILE:\n${candidate}${feedback}\n\nScore each of the following ${batch.length} jobs for this candidate. Return one entry per job, using the job's index.\n\n${jobsText}`,
         { model, system: SYSTEM, responseSchema: RESPONSE_SCHEMA, temperature: 0.1 }
       );
       for (const r of results) {

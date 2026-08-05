@@ -9,7 +9,8 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   return NextResponse.json({ job });
 }
 
-// PATCH { feedStatus } — queue/dismiss/restore a job in the feed
+// PATCH { feedStatus, dismissReason? } — queue/dismiss/restore a job in the feed.
+// The optional reason is fed back into future scoring as a negative preference.
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const body = await req.json();
@@ -17,6 +18,12 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   if (!allowed.includes(body.feedStatus)) {
     return NextResponse.json({ error: "invalid feedStatus" }, { status: 400 });
   }
-  await db.update(tables.jobs).set({ feedStatus: body.feedStatus }).where(eq(tables.jobs.id, Number(id)));
+  const update: Record<string, unknown> = { feedStatus: body.feedStatus };
+  if (body.feedStatus === "dismissed") {
+    update.dismissedAt = new Date();
+    if (typeof body.dismissReason === "string" && body.dismissReason.trim())
+      update.dismissReason = body.dismissReason.trim().slice(0, 300);
+  }
+  await db.update(tables.jobs).set(update).where(eq(tables.jobs.id, Number(id)));
   return NextResponse.json({ ok: true });
 }
