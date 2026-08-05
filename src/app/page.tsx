@@ -27,11 +27,19 @@ interface Run {
   error: string | null;
 }
 
+interface RateLimit {
+  host: string;
+  count: number;
+  lastAt: string;
+  lastContext: string;
+}
+
 export default function Today() {
   const [ready, setReady] = useState<App[]>([]);
   const [active, setActive] = useState<App[]>([]);
   const [queued, setQueued] = useState<Job[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
+  const [rateLimits, setRateLimits] = useState<RateLimit[]>([]);
   const [running, setRunning] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -46,6 +54,7 @@ export default function Today() {
     setActive(r2.applications || []);
     setQueued(r3.jobs || []);
     setRuns(r4.runs || []);
+    setRateLimits(r4.rateLimits || []);
     setRunning(r4.running);
   }, []);
 
@@ -72,6 +81,21 @@ export default function Today() {
           {running ? "Pipeline running…" : "Scrape & score now"}
         </button>
       </div>
+
+      {rateLimits.length > 0 && (
+        <Card className="border-amber-800 bg-amber-950/30">
+          <div className="text-sm text-amber-300">
+            ⚠ Rate limits hit in the last 24h:{" "}
+            {rateLimits
+              .map((r) => `${r.host} (${r.count}× · last ${new Date(r.lastAt).toLocaleTimeString()} · ${r.lastContext})`)
+              .join("  ·  ")}
+          </div>
+          <div className="text-xs text-zinc-500 mt-1">
+            Probing and sweeps back off automatically and retry affected companies next run — no strikes, no false
+            misses. If this persists, lower resolveBatchPerRun in Settings.
+          </div>
+        </Card>
+      )}
 
       <div className="grid grid-cols-3 gap-4">
         <Card>

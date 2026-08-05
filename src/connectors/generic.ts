@@ -42,8 +42,16 @@ function slugToText(pathname: string): string {
   return decodeURIComponent(seg).replace(/[-_+]/g, " ").replace(/\.\w{2,5}$/, "").trim();
 }
 
+const normUrl = (s: string) => s.replace(/\/+$/, "");
+
 function extractJobLinks(html: string, baseUrl: string): { url: string; text: string }[] {
   const base = new URL(baseUrl);
+  // relevant text alone must NOT qualify a link — nav/service pages ("Cloud Infrastructure")
+  // masquerade as jobs. It only counts for links living under the careers section itself.
+  const careersPath = base.pathname.replace(/\/+$/, "");
+  const qualifies = (url: URL, text: string) =>
+    JOB_LINK_RE.test(url.pathname) ||
+    (titleLooksRelevant(text) && careersPath.length > 1 && url.pathname.startsWith(careersPath + "/"));
   const out = new Map<string, string>();
   // pass 1: anchors with capturable inner text (cap generous — SPA job cards nest deep markup)
   const aRe = /<a\s[^>]*href=["']([^"'#]+)["'][^>]*>([\s\S]{0,600}?)<\/a>/gi;
@@ -57,8 +65,8 @@ function extractJobLinks(html: string, baseUrl: string): { url: string; text: st
       continue;
     }
     if (url.host !== base.host) continue; // same-site only; ATS links are handled via scanForBoards
-    if (url.toString() === baseUrl) continue;
-    if (!JOB_LINK_RE.test(url.pathname) && !titleLooksRelevant(text)) continue;
+    if (normUrl(url.toString()) === normUrl(baseUrl)) continue;
+    if (!qualifies(url, text)) continue;
     if (!out.has(url.toString())) out.set(url.toString(), text);
   }
   // pass 2: href-only — anchors whose closing tag sits beyond any sane capture window
@@ -72,7 +80,7 @@ function extractJobLinks(html: string, baseUrl: string): { url: string; text: st
     } catch {
       continue;
     }
-    if (url.host !== base.host || url.toString() === baseUrl) continue;
+    if (url.host !== base.host || normUrl(url.toString()) === normUrl(baseUrl)) continue;
     if (!JOB_LINK_RE.test(url.pathname)) continue;
     const key = url.toString();
     if (!out.has(key) || !out.get(key)) out.set(key, out.get(key) || slugToText(url.pathname));
@@ -156,7 +164,7 @@ export async function fetchGenericCareers(
     const HUB_RE = /(all|alle|zoeken|search|overview|open)/i;
     const hubs = extractJobLinks(html, company.careersUrl)
       .filter((c) => HUB_RE.test(c.text) || /(zoeken|search|vacatures\/?$|jobs\/?$|vacancies\/?$)/i.test(c.url))
-      .slice(0, 2);
+      .slice(0, 4);
     for (const hub of hubs) {
       const { html: hubHtml } = await fetchPageMaybeRendered(hub.url, opts.render);
       await sleep(150);
@@ -187,7 +195,7 @@ export async function fetchGenericCareers(
       const HUB_RE = /(all|alle|zoeken|search|overview|open)/i;
       const hubs = extractJobLinks(renderedMain, company.careersUrl)
         .filter((c) => HUB_RE.test(c.text) || /(zoeken|search|vacatures\/?$|jobs\/?$|vacancies\/?$)/i.test(c.url))
-        .slice(0, 2);
+        .slice(0, 4);
       for (const hub of hubs) {
         const hubHtml = await opts.render(hub.url);
         if (hubHtml) pages.push({ html: hubHtml, base: hub.url });

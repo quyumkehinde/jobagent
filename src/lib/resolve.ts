@@ -2,6 +2,7 @@ import { db, tables } from "@/db";
 import { and, eq } from "drizzle-orm";
 import { UA, stripHtml } from "@/connectors/types";
 import { createRenderBudget } from "./browser";
+import { reportRateLimit } from "./hostgate";
 import { CONNECTORS, PROBE_ORDER, AtsName } from "@/connectors/registry";
 import { scanForBoards } from "@/connectors/discovery";
 import { getSetting, DEFAULTS } from "./settings";
@@ -108,15 +109,24 @@ interface Hit {
 // resolve to someone else's board. A validated hit with a KNOWN-ZERO job count (vestigial
 // account, e.g. a company that migrated ATS) is held as a fallback while we keep probing
 // for a non-empty board.
-async function probeAll(company: { name: string }, notes: string[]): Promise<Hit | null> {
+async function probeAll(
+  company: { name: string },
+  notes: string[]
+): Promise<{ hit: Hit | null; sawRateLimit: boolean }> {
   const slugs = slugCandidates(company.name);
   let emptyHit: Hit | null = null;
+  let sawRateLimit = false;
   for (const ats of PROBE_ORDER) {
     const conn = CONNECTORS[ats as AtsName];
     if (!conn) continue;
     for (const slug of slugs) {
       const probe = await conn.probe(slug);
       await sleep(150);
+      if (probe.rateLimited) {
+        // that ATS is throttling us — a "miss" from it proves nothing; skip it entirely
+        sawRateLimit = true;
+        break;
+      }
       if (!probe.exists) continue;
       if (probe.boardName) {
         if (!namesMatch(company.name, probe.boardName)) {
@@ -129,7 +139,7 @@ async function probeAll(company: { name: string }, notes: string[]): Promise<Hit
           notes.push(`${conn.ats}/${slug} validated but has 0 jobs — kept looking for a live board`);
           continue;
         }
-        return hit;
+        return { hit, sawRateLimit };
       }
       // no name in the API — try the board's public page title
       if (await boardPageMatches(conn.ats, slug, company.name)) {
@@ -139,12 +149,12 @@ async function probeAll(company: { name: string }, notes: string[]): Promise<Hit
           notes.push(`${conn.ats}/${slug} validated but has 0 jobs — kept looking for a live board`);
           continue;
         }
-        return hit;
+        return { hit, sawRateLimit };
       }
       notes.push(`${conn.ats}/${slug} exists but name unverifiable`);
     }
   }
-  return emptyHit; // better an empty validated board than nothing — the generic sweep covers it
+  return { hit: emptyHit, sawRateLimit }; // better an empty validated board than nothing — the generic sweep covers it
 }
 
 // ---------- web fallback (keyless) --------------------------------------------------
@@ -167,6 +177,7 @@ async function ddgFindWebsite(name: string, country: string | null): Promise<str
   if (!html) return null;
   if (/anomaly|captcha|challenge/i.test(html) || !html.includes("uddg=")) {
     ddgBlockedThisRun = true;
+    await reportRateLimit("html.duckduckgo.com", "web-search fallback", 0);
     log.warn("duckduckgo blocked/empty — web fallback disabled for this run");
     return null;
   }
@@ -190,13 +201,16 @@ async function ddgFindWebsite(name: string, country: string | null): Promise<str
 }
 
 // Domain guesses are free: {slug}.nl / .com — but only trusted when the page title
-// actually matches the company name.
+// actually matches the company name. Tries both the joined name and the brand word
+// ("9altitudes Business Analytics" → 9altitudesbusinessanalytics AND 9altitudes).
 async function guessWebsite(name: string): Promise<string | null> {
-  const slug = slugCandidates(name)[0];
-  if (!slug) return null;
-  for (const domain of [`https://www.${slug}.nl`, `https://${slug}.nl`, `https://www.${slug}.com`, `https://${slug}.com`]) {
-    const html = await fetchHtml(domain, 8000);
-    if (html && pageNames(html).some((n) => namesMatch(name, n))) return domain;
+  const all = slugCandidates(name);
+  const slugs = [...new Set([all[0], all[all.length - 1]])].filter(Boolean);
+  for (const slug of slugs) {
+    for (const domain of [`https://www.${slug}.nl`, `https://${slug}.nl`, `https://www.${slug}.com`, `https://${slug}.com`]) {
+      const html = await fetchHtml(domain, 8000);
+      if (html && pageNames(html).some((n) => namesMatch(name, n))) return domain;
+    }
   }
   return null;
 }
@@ -301,7 +315,8 @@ export async function resolveCompany(companyId: number, allowWeb = true): Promis
 
   await db.update(tables.companies).set({ resolveStatus: "probing" }).where(eq(tables.companies.id, c.id));
 
-  let hit = await probeAll(c, notes);
+  const probed = await probeAll(c, notes);
+  let hit = probed.hit;
   let web: WebResult = {};
   let usedWeb = false;
   if (!hit) {
@@ -352,6 +367,22 @@ export async function resolveCompany(companyId: number, allowWeb = true): Promis
       .where(eq(tables.companies.id, c.id));
     log.info("resolved", { company: c.name, board: `${hit.ats}/${hit.token}` });
     return { status: "resolved", usedWeb };
+  }
+
+  if (probed.sawRateLimit) {
+    // some ATS never got a fair probe — concluding "unresolved" now would be a false
+    // negative. Keep whatever web evidence we gathered and retry next run.
+    await db
+      .update(tables.companies)
+      .set({
+        resolveStatus: "pending",
+        resolveNote: "probing was rate-limited — deferred to next run",
+        website: web.website || c.website,
+        careersUrl: web.careersUrl || c.careersUrl,
+      })
+      .where(eq(tables.companies.id, c.id));
+    log.info("deferred (rate-limited)", { company: c.name });
+    return { status: "deferred", usedWeb };
   }
 
   await db

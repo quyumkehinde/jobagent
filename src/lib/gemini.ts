@@ -1,6 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 import { getSetting } from "./settings";
 import { createLogger } from "./log";
+import { reportRateLimit } from "./hostgate";
 
 const log = createLogger("gemini");
 
@@ -59,6 +60,8 @@ export async function generate(prompt: string, opts: GenOptions): Promise<string
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       const retryable = /429|RESOURCE_EXHAUSTED|503|UNAVAILABLE|overloaded|empty response/i.test(msg);
+      if (/429|RESOURCE_EXHAUSTED/i.test(msg))
+        await reportRateLimit("generativelanguage.googleapis.com", `gemini ${opts.model}`, 0);
       if (!retryable || attempt === 3) throw err;
       // free tier: back off hard on quota errors
       const backoffMs = (attempt + 1) * 20000;

@@ -12,6 +12,7 @@ import { scoreUnscored } from "./scoring";
 import { resolvePendingCompanies, discoverCareersUrl } from "./resolve";
 import { fetchGenericCareers, JsRequiredError } from "@/connectors/generic";
 import { createRenderBudget, closeBrowser } from "./browser";
+import { reportRateLimit } from "./hostgate";
 import { generateJSON } from "./gemini";
 import { getSetting, DEFAULTS } from "./settings";
 import { createLogger, startTimer } from "./log";
@@ -84,19 +85,24 @@ export async function scrapeAtsBoards(): Promise<RawJob[]> {
         .where(eq(tables.companies.id, c.id));
     } catch (err) {
       failed++;
-      const errorCount = c.errorCount + 1;
+      const msg = String(err);
+      // a 429 is the ATS throttling US, not a dead board — never count it as a strike
+      const rateLimited = /\b429\b|too many request/i.test(msg);
+      if (rateLimited) await reportRateLimit(new URL(conn.boardUrl(c.token)).host, `sweep ${c.ats}/${c.token}`);
+      const errorCount = rateLimited ? c.errorCount : c.errorCount + 1;
       log.warn("board poll failed", {
         board: `${c.ats}/${c.token}`,
+        rateLimited,
         strike: errorCount,
         retired: errorCount >= 3,
-        error: String(err).slice(0, 200),
+        error: msg.slice(0, 200),
       });
       await db
         .update(tables.companies)
         .set({
           lastPolledAt: new Date(),
           errorCount,
-          lastError: String(err).slice(0, 300),
+          lastError: msg.slice(0, 300),
           // 404s mean a bad/renamed board token — retire it after 3 strikes
           active: errorCount < 3,
         })

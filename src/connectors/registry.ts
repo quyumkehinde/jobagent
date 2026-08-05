@@ -1,4 +1,5 @@
 import { RawJob, UA } from "./types";
+import { hostGate, hostCoolingDown, reportRateLimit } from "@/lib/hostgate";
 import { fetchGreenhouse } from "./greenhouse";
 import { fetchLever } from "./lever";
 import { fetchAshby } from "./ashby";
@@ -29,6 +30,7 @@ export interface ProbeResult {
   exists: boolean;
   boardName?: string; // company name as the ATS reports it — used to validate probe hits
   jobCount?: number;
+  rateLimited?: boolean; // 429/cooldown — NOT a miss; resolution must defer, not conclude
 }
 
 export interface FetchCtx {
@@ -43,10 +45,19 @@ export interface AtsConnector {
   discoveryPatterns: RegExp[];
 }
 
-// Probe helper: fetch JSON, null on any failure. Probes must never throw — a miss is data.
-async function probeJson<T>(url: string): Promise<T | null> {
+// Probe helper: fetch JSON, null on any failure. Probes must never throw — a miss is
+// data. A 429 is NOT a miss: it returns the "rate-limited" sentinel and cools the host
+// down so we stop feeding a tripped limiter (that's how the user's own browser got blocked).
+async function probeJson<T>(url: string): Promise<T | "rate-limited" | null> {
+  const host = new URL(url).host;
+  if (hostCoolingDown(host)) return "rate-limited";
+  await hostGate(host);
   try {
     const res = await fetch(url, { headers: { "User-Agent": UA, Accept: "application/json" } });
+    if (res.status === 429) {
+      await reportRateLimit(host, `probe ${url.slice(0, 60)}`);
+      return "rate-limited";
+    }
     if (!res.ok) return null;
     return (await res.json()) as T;
   } catch {
@@ -61,6 +72,7 @@ const greenhouse: AtsConnector = {
     const data = await probeJson<{ name?: string }>(
       `https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(token)}`
     );
+    if (data === "rate-limited") return { exists: false, rateLimited: true };
     return data ? { exists: true, boardName: data.name } : { exists: false };
   },
   boardUrl: (t) => `https://boards.greenhouse.io/${t}`,
@@ -78,6 +90,7 @@ const lever: AtsConnector = {
     const data = await probeJson<unknown[]>(
       `https://api.lever.co/v0/postings/${encodeURIComponent(token)}?mode=json&limit=1`
     );
+    if (data === "rate-limited") return { exists: false, rateLimited: true };
     return Array.isArray(data) ? { exists: true, jobCount: data.length } : { exists: false };
   },
   boardUrl: (t) => `https://jobs.lever.co/${t}`,
@@ -91,6 +104,7 @@ const ashby: AtsConnector = {
     const data = await probeJson<{ jobs?: unknown[]; name?: string; organizationName?: string }>(
       `https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(token)}`
     );
+    if (data === "rate-limited") return { exists: false, rateLimited: true };
     if (!data || !Array.isArray(data.jobs)) return { exists: false };
     return { exists: true, boardName: data.organizationName || data.name, jobCount: data.jobs.length };
   },
@@ -106,6 +120,7 @@ const recruitee: AtsConnector = {
     const data = await probeJson<{ offers?: unknown[] }>(
       `https://${encodeURIComponent(token)}.recruitee.com/api/offers/`
     );
+    if (data === "rate-limited") return { exists: false, rateLimited: true };
     if (!data || !Array.isArray(data.offers)) return { exists: false };
     return { exists: true, jobCount: data.offers.length };
   },
@@ -121,6 +136,7 @@ const workable: AtsConnector = {
     const data = await probeJson<{ name?: string; jobs?: unknown[] }>(
       `https://apply.workable.com/api/v1/widget/accounts/${encodeURIComponent(token)}?details=false`
     );
+    if (data === "rate-limited") return { exists: false, rateLimited: true };
     if (!data || !data.name) return { exists: false };
     return { exists: true, boardName: data.name, jobCount: Array.isArray(data.jobs) ? data.jobs.length : undefined };
   },
@@ -133,8 +149,15 @@ const personio: AtsConnector = {
   fetchJobs: (t, n, id, ctx) => fetchPersonio(t, n, id, ctx?.knownExternalIds),
   async probe(token) {
     for (const url of personioFeedUrls(token)) {
+      const host = new URL(url).host;
+      if (hostCoolingDown(host)) return { exists: false, rateLimited: true };
+      await hostGate(host);
       try {
         const res = await fetch(url, { headers: { "User-Agent": UA } });
+        if (res.status === 429) {
+          await reportRateLimit(host, "probe personio");
+          return { exists: false, rateLimited: true };
+        }
         if (res.ok) {
           const text = await res.text();
           if (text.includes("<workzag-jobs") || text.includes("<position>")) return { exists: true };
@@ -156,6 +179,7 @@ const smartrecruiters: AtsConnector = {
     const data = await probeJson<{ totalFound?: number; content?: { company?: { name?: string } }[] }>(
       `https://api.smartrecruiters.com/v1/companies/${encodeURIComponent(token)}/postings?limit=1`
     );
+    if (data === "rate-limited") return { exists: false, rateLimited: true };
     if (!data || typeof data.totalFound !== "number") return { exists: false };
     return { exists: true, boardName: data.content?.[0]?.company?.name, jobCount: data.totalFound };
   },
@@ -168,6 +192,7 @@ const breezy: AtsConnector = {
   fetchJobs: (t, n, id, ctx) => fetchBreezy(t, n, id, ctx?.knownExternalIds),
   async probe(token) {
     const data = await probeJson<unknown[]>(`https://${encodeURIComponent(token)}.breezy.hr/json`);
+    if (data === "rate-limited") return { exists: false, rateLimited: true };
     return Array.isArray(data) ? { exists: true, jobCount: data.length } : { exists: false };
   },
   boardUrl: (t) => `https://${t}.breezy.hr`,
@@ -181,6 +206,7 @@ const bamboohr: AtsConnector = {
     const data = await probeJson<{ result?: unknown[] }>(
       `https://${encodeURIComponent(token)}.bamboohr.com/careers/list`
     );
+    if (data === "rate-limited") return { exists: false, rateLimited: true };
     if (!data || !Array.isArray(data.result)) return { exists: false };
     return { exists: true, jobCount: data.result.length };
   },
