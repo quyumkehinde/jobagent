@@ -1,6 +1,7 @@
 import { db, tables } from "@/db";
 import { and, eq } from "drizzle-orm";
-import { UA } from "@/connectors/types";
+import { UA, stripHtml } from "@/connectors/types";
+import { createRenderBudget } from "./browser";
 import { CONNECTORS, PROBE_ORDER, AtsName } from "@/connectors/registry";
 import { scanForBoards } from "@/connectors/discovery";
 import { getSetting, DEFAULTS } from "./settings";
@@ -136,6 +137,8 @@ const CAREERS_LINK_RE =
   /(careers?|jobs?|vacatures?|vacancies|werken[-_ ]?bij|werkenbij|join[-_ ]?(us|the[-_ ]team)|work[-_ ]?(with|at|for)[-_ ]?us?|team)/i;
 
 let ddgBlockedThisRun = false;
+// per-batch headless render budget for JS-shell careers pages (set in resolvePendingCompanies)
+let renderFn: ((url: string) => Promise<string | null>) | null = null;
 
 async function ddgFindWebsite(name: string, country: string | null): Promise<string | null> {
   if (ddgBlockedThisRun) return null;
@@ -216,8 +219,10 @@ async function findViaWeb(company: { name: string; country: string | null; websi
   const careersLinks = extractCareersLinks(homepage, website);
   let careersHtml = "";
   for (const link of careersLinks) {
-    const html = await fetchHtml(link);
+    let html = await fetchHtml(link);
     await sleep(150);
+    // JS-shell careers pages hide their ATS embeds from static HTML — render when budget allows
+    if (renderFn && (!html || stripHtml(html).length < 100)) html = (await renderFn(link)) || html;
     if (html) careersHtml += "\n" + html;
   }
 
@@ -327,6 +332,7 @@ export async function resolvePendingCompanies(): Promise<{ resolved: number; unr
   const batch = await getSetting("resolveBatchPerRun", DEFAULTS.resolveBatchPerRun);
   const webCap = await getSetting("resolveWebPerRun", DEFAULTS.resolveWebPerRun);
   ddgBlockedThisRun = false;
+  renderFn = createRenderBudget(await getSetting("headlessResolvePerRun", DEFAULTS.headlessResolvePerRun));
 
   const pending = await db.query.companies.findMany({
     where: eq(tables.companies.resolveStatus, "pending"),

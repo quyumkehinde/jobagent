@@ -33,6 +33,8 @@ export const DEFAULTS = {
   genericCompaniesPerRun: 10, // unresolved-with-careersUrl companies scraped per run
   genericJobsPerCompany: 15, // job-page fetches per company per run
   genericGeminiPerRun: 5, // Gemini extraction calls the generic scraper may spend per run
+  headlessPagesPerRun: 30, // headless-Chrome renders the generic scraper may spend per run
+  headlessResolvePerRun: 10, // headless renders the resolution web-fallback may spend per run
   closeAfterDays: 14, // board-backed jobs unseen this long are marked closed
   geminiMinIntervalMs: 6500, // free tier ~9 RPM; drop to ~500 on a paid key
 };

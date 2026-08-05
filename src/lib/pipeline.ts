@@ -11,6 +11,7 @@ import { ingestJobs } from "./ingest";
 import { scoreUnscored } from "./scoring";
 import { resolvePendingCompanies } from "./resolve";
 import { fetchGenericCareers, JsRequiredError } from "@/connectors/generic";
+import { createRenderBudget, closeBrowser } from "./browser";
 import { generateJSON } from "./gemini";
 import { getSetting, DEFAULTS } from "./settings";
 import { createLogger, startTimer } from "./log";
@@ -113,6 +114,7 @@ async function scrapeGenericCareers(): Promise<RawJob[]> {
   const perRun = await getSetting("genericCompaniesPerRun", DEFAULTS.genericCompaniesPerRun);
   const maxJobs = await getSetting("genericJobsPerCompany", DEFAULTS.genericJobsPerCompany);
   const geminiCap = await getSetting("genericGeminiPerRun", DEFAULTS.genericGeminiPerRun);
+  const render = createRenderBudget(await getSetting("headlessPagesPerRun", DEFAULTS.headlessPagesPerRun));
 
   const candidates = await db.query.companies.findMany({
     where: and(
@@ -162,7 +164,7 @@ async function scrapeGenericCareers(): Promise<RawJob[]> {
     try {
       const result = await fetchGenericCareers(
         { id: c.id, name: c.name, careersUrl: c.careersUrl! },
-        { maxJobs, knownExternalIds: known, tryGeminiExtract }
+        { maxJobs, knownExternalIds: known, tryGeminiExtract, render }
       );
       if (result.atsHit) {
         // the careers page linked a supported ATS after all — resolve the company properly
@@ -286,6 +288,7 @@ export async function runPipeline(): Promise<PipelineResult> {
   } finally {
     clearInterval(heartbeat);
     running = false;
+    await closeBrowser(); // never leave a headless Chrome behind in a long-lived process
     await releaseLock(PIPELINE_LOCK);
   }
 }

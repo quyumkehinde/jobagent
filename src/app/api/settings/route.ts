@@ -33,6 +33,8 @@ export async function PUT(req: NextRequest) {
     "geminiMinIntervalMs",
     "resolveBatchPerRun",
     "resolveWebPerRun",
+    "headlessPagesPerRun",
+    "headlessResolvePerRun",
   ];
   for (const key of allowed) {
     if (key in body && body[key] !== "•••set•••") await setSetting(key, body[key]);
