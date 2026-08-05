@@ -48,9 +48,9 @@ export function stripHtml(html: string): string {
 
 // Cheap title prefilter so we only spend Gemini quota on plausibly-relevant roles.
 const TITLE_RE =
-  /(software|backend|back[- ]end|full[- ]?stack|mobile|ios|android|platform|infra(structure)?|devops|dev ?ops|site reliability|sre|systems?|distributed|api|cloud|golang|\bgo\b|node|typescript|python|rust|react native|flutter|engineer|developer|swe)/i;
+  /(software|backend|back[- ]end|full[- ]?stack|mobile|ios|android|platform|infra(structure)?|devops|dev ?ops|site reliability|sre|systems?|distributed|api|cloud|golang|\bgo\b|node|typescript|python|rust|react native|flutter|engineer|developer|swe|ontwikkelaar|programmeur)/i;
 const TITLE_EXCLUDE =
-  /(recruiter|sales|marketing|designer|product manager|program manager|engineering manager|account (exec|manager)|customer success|support engineer|solutions? (engineer|architect)|data scientist|analyst|qa\b|test engineer|intern\b|internship|electrical|mechanical|civil|hardware)/i;
+  /(recruiter|sales|marketing|designer|product manager|program manager|engineering manager|account (exec|manager)|customer success|support engineer|solutions? (engineer|architect)|data scientist|analyst|qa\b|test engineer|intern\b|internship|electrical|mechanical|civil|hardware|verkoop|klantenservice|magazijn|monteur|stagiair)/i;
 
 export function titleLooksRelevant(title: string): boolean {
   return TITLE_RE.test(title) && !TITLE_EXCLUDE.test(title);

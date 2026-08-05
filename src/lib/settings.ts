@@ -28,4 +28,11 @@ export const DEFAULTS = {
   maxQueuedPerCompany: 5, // per company, keep only the N best-scoring jobs queued
   scrapeIntervalHours: 3,
   maxScoringPerRun: 120, // cap Gemini scoring calls per scrape run (batched 8/call)
+  resolveBatchPerRun: 200, // imported companies probed per pipeline run
+  resolveWebPerRun: 40, // of those, how many may use the web-search fallback
+  genericCompaniesPerRun: 10, // unresolved-with-careersUrl companies scraped per run
+  genericJobsPerCompany: 15, // job-page fetches per company per run
+  genericGeminiPerRun: 5, // Gemini extraction calls the generic scraper may spend per run
+  closeAfterDays: 14, // board-backed jobs unseen this long are marked closed
+  geminiMinIntervalMs: 6500, // free tier ~9 RPM; drop to ~500 on a paid key
 };

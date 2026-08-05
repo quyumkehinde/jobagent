@@ -14,12 +14,13 @@ async function getClient(): Promise<GoogleGenAI> {
   return client;
 }
 
-// Simple spacing between calls to stay inside free-tier RPM limits.
+// Simple spacing between calls to stay inside RPM limits. Settings-driven so a paid-tier
+// switch (raise maxScoringPerRun, drop this interval) needs no code change.
 let lastCallAt = 0;
-const MIN_INTERVAL_MS = 6500; // ~9 req/min
 
 async function throttle() {
-  const wait = lastCallAt + MIN_INTERVAL_MS - Date.now();
+  const minInterval = await getSetting("geminiMinIntervalMs", 6500);
+  const wait = lastCallAt + minInterval - Date.now();
   if (wait > 0) await new Promise((r) => setTimeout(r, wait));
   lastCallAt = Date.now();
 }

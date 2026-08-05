@@ -11,6 +11,10 @@ export async function GET() {
     maxQueuedPerCompany: await getSetting("maxQueuedPerCompany", DEFAULTS.maxQueuedPerCompany),
     scrapeIntervalHours: await getSetting("scrapeIntervalHours", DEFAULTS.scrapeIntervalHours),
     maxScoringPerRun: await getSetting("maxScoringPerRun", DEFAULTS.maxScoringPerRun),
+    closeAfterDays: await getSetting("closeAfterDays", DEFAULTS.closeAfterDays),
+    geminiMinIntervalMs: await getSetting("geminiMinIntervalMs", DEFAULTS.geminiMinIntervalMs),
+    resolveBatchPerRun: await getSetting("resolveBatchPerRun", DEFAULTS.resolveBatchPerRun),
+    resolveWebPerRun: await getSetting("resolveWebPerRun", DEFAULTS.resolveWebPerRun),
   };
   return NextResponse.json({ settings });
 }
@@ -25,6 +29,10 @@ export async function PUT(req: NextRequest) {
     "maxQueuedPerCompany",
     "scrapeIntervalHours",
     "maxScoringPerRun",
+    "closeAfterDays",
+    "geminiMinIntervalMs",
+    "resolveBatchPerRun",
+    "resolveWebPerRun",
   ];
   for (const key of allowed) {
     if (key in body && body[key] !== "•••set•••") await setSetting(key, body[key]);

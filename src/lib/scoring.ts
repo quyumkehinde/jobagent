@@ -1,5 +1,5 @@
 import { db, tables } from "@/db";
-import { eq, isNull, isNotNull, and, inArray } from "drizzle-orm";
+import { eq, isNull, isNotNull, and, desc, inArray } from "drizzle-orm";
 import { generateJSON } from "./gemini";
 import { buildCandidateSummary } from "./candidate";
 import { getSetting, DEFAULTS } from "./settings";
@@ -136,11 +136,23 @@ export async function scoreUnscored(limit?: number): Promise<{ scored: number; q
   const perCompanyCap = await getSetting("maxQueuedPerCompany", DEFAULTS.maxQueuedPerCompany);
   const model = await getSetting("scoringModel", DEFAULTS.scoringModel);
 
-  const unscored = await db.query.jobs.findMany({
-    where: and(isNull(tables.jobs.scoredAt), eq(tables.jobs.feedStatus, "new"), eq(tables.jobs.closed, false)),
-    limit: maxPerRun,
-    columns: { id: true, title: true, companyName: true, location: true, salary: true, description: true },
-  });
+  // Priority order: jobs at visa-sponsoring companies first, then newest-first — so the
+  // queue is useful from day 1 even while a large import backlog drains on free tier.
+  // (SQLite sorts NULLs last under DESC, so sponsor=true > false > unknown/no-company.)
+  const unscored = await db
+    .select({
+      id: tables.jobs.id,
+      title: tables.jobs.title,
+      companyName: tables.jobs.companyName,
+      location: tables.jobs.location,
+      salary: tables.jobs.salary,
+      description: tables.jobs.description,
+    })
+    .from(tables.jobs)
+    .leftJoin(tables.companies, eq(tables.jobs.companyId, tables.companies.id))
+    .where(and(isNull(tables.jobs.scoredAt), eq(tables.jobs.feedStatus, "new"), eq(tables.jobs.closed, false)))
+    .orderBy(desc(tables.companies.visaSponsor), desc(tables.jobs.firstSeenAt))
+    .limit(maxPerRun);
   if (unscored.length === 0) {
     log.info("nothing to score");
     // still rebalance: dismissals/drafts since the last run may have freed queue slots

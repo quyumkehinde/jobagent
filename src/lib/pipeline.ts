@@ -1,8 +1,6 @@
 import { db, tables } from "@/db";
-import { eq } from "drizzle-orm";
-import { fetchGreenhouse } from "@/connectors/greenhouse";
-import { fetchLever } from "@/connectors/lever";
-import { fetchAshby } from "@/connectors/ashby";
+import { and, eq, inArray, isNotNull, lt } from "drizzle-orm";
+import { CONNECTORS } from "@/connectors/registry";
 import { fetchRemoteOk } from "@/connectors/remoteok";
 import { fetchWeWorkRemotely } from "@/connectors/weworkremotely";
 import { fetchHnWhoIsHiring } from "@/connectors/hn";
@@ -11,6 +9,10 @@ import { discoverBoards } from "@/connectors/discovery";
 import { RawJob } from "@/connectors/types";
 import { ingestJobs } from "./ingest";
 import { scoreUnscored } from "./scoring";
+import { resolvePendingCompanies } from "./resolve";
+import { fetchGenericCareers, JsRequiredError } from "@/connectors/generic";
+import { generateJSON } from "./gemini";
+import { getSetting, DEFAULTS } from "./settings";
 import { createLogger, startTimer } from "./log";
 import { acquireLock, releaseLock, heartbeatLock, isLockHeld } from "./lock";
 
@@ -40,18 +42,40 @@ async function recordRun(source: string, fn: () => Promise<RawJob[]>): Promise<R
   }
 }
 
+// Sources whose connectors fetch a detail page per NEW job — they get the set of
+// already-ingested externalIds so re-sweeps stay cheap.
+const TWO_PHASE_SOURCES = ["smartrecruiters", "breezy", "bamboohr", "personio"] as const;
+
+async function knownIdsBySource(): Promise<Map<string, Set<string>>> {
+  const rows = await db.query.jobs.findMany({
+    where: inArray(tables.jobs.source, [...TWO_PHASE_SOURCES]),
+    columns: { source: true, externalId: true },
+  });
+  const map = new Map<string, Set<string>>();
+  for (const r of rows) {
+    if (!map.has(r.source)) map.set(r.source, new Set());
+    map.get(r.source)!.add(r.externalId);
+  }
+  return map;
+}
+
 export async function scrapeAtsBoards(): Promise<RawJob[]> {
-  const companies = await db.query.companies.findMany({ where: eq(tables.companies.active, true) });
+  // active boards that actually have a resolved ATS — pending/unresolved imports have none
+  const companies = await db.query.companies.findMany({
+    where: and(eq(tables.companies.active, true), isNotNull(tables.companies.ats), isNotNull(tables.companies.token)),
+  });
+  const knownIds = await knownIdsBySource();
   const elapsed = startTimer();
   log.info("ats sweep start", { boards: companies.length });
   const all: RawJob[] = [];
   let failed = 0;
   for (const c of companies) {
+    const conn = c.ats ? CONNECTORS[c.ats] : undefined;
+    if (!conn || !c.token) continue; // unresolved imports have no board yet
     try {
-      let jobs: RawJob[] = [];
-      if (c.ats === "greenhouse") jobs = await fetchGreenhouse(c.token, c.name, c.id);
-      else if (c.ats === "lever") jobs = await fetchLever(c.token, c.name, c.id);
-      else if (c.ats === "ashby") jobs = await fetchAshby(c.token, c.name, c.id);
+      const jobs = await conn.fetchJobs(c.token, c.name, c.id, {
+        knownExternalIds: knownIds.get(c.ats!),
+      });
       all.push(...jobs);
       await db
         .update(tables.companies)
@@ -83,6 +107,95 @@ export async function scrapeAtsBoards(): Promise<RawJob[]> {
   return all;
 }
 
+// Generic careers-page sweep: unresolved imports that at least have a careersUrl.
+// Runs as its own aggregator-style source ("generic") with hard caps.
+async function scrapeGenericCareers(): Promise<RawJob[]> {
+  const perRun = await getSetting("genericCompaniesPerRun", DEFAULTS.genericCompaniesPerRun);
+  const maxJobs = await getSetting("genericJobsPerCompany", DEFAULTS.genericJobsPerCompany);
+  const geminiCap = await getSetting("genericGeminiPerRun", DEFAULTS.genericGeminiPerRun);
+
+  const candidates = await db.query.companies.findMany({
+    where: and(
+      eq(tables.companies.active, true),
+      eq(tables.companies.resolveStatus, "unresolved"),
+      isNotNull(tables.companies.careersUrl)
+    ),
+    orderBy: (t, { asc }) => asc(t.lastPolledAt),
+    limit: perRun,
+  });
+  if (!candidates.length) return [];
+
+  const knownRows = await db.query.jobs.findMany({
+    where: eq(tables.jobs.source, "generic"),
+    columns: { externalId: true },
+  });
+  const known = new Set(knownRows.map((r) => r.externalId));
+
+  let geminiUsed = 0;
+  const tryGeminiExtract = async (pageText: string, companyName: string) => {
+    if (geminiUsed >= geminiCap) return null;
+    geminiUsed++;
+    try {
+      const model = await getSetting("scoringModel", DEFAULTS.scoringModel);
+      return await generateJSON<{ title: string; url: string; location?: string }[]>(
+        `The following is the text of ${companyName}'s careers page. List the open job postings with their absolute or relative link URLs. Only include real job openings.\n\n${pageText}`,
+        {
+          model,
+          responseSchema: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: { title: { type: "string" }, url: { type: "string" }, location: { type: "string" } },
+              required: ["title", "url"],
+            },
+          },
+          temperature: 0.1,
+        }
+      );
+    } catch {
+      return null;
+    }
+  };
+
+  const all: RawJob[] = [];
+  for (const c of candidates) {
+    try {
+      const result = await fetchGenericCareers(
+        { id: c.id, name: c.name, careersUrl: c.careersUrl! },
+        { maxJobs, knownExternalIds: known, tryGeminiExtract }
+      );
+      if (result.atsHit) {
+        // the careers page linked a supported ATS after all — resolve the company properly
+        await db
+          .update(tables.companies)
+          .set({
+            ats: result.atsHit.ats,
+            token: result.atsHit.token,
+            resolveStatus: "resolved",
+            resolveNote: `ATS found on careers page${result.atsHit.boardName ? ` (board "${result.atsHit.boardName}")` : ""}`,
+            errorCount: 0,
+          })
+          .where(eq(tables.companies.id, c.id));
+        log.info("generic sweep resolved company via careers page", {
+          company: c.name,
+          board: `${result.atsHit.ats}/${result.atsHit.token}`,
+        });
+      }
+      all.push(...result.jobs);
+      await db.update(tables.companies).set({ lastPolledAt: new Date() }).where(eq(tables.companies.id, c.id));
+    } catch (err) {
+      const note = err instanceof JsRequiredError ? "js-required" : `generic scrape failed: ${String(err).slice(0, 150)}`;
+      await db
+        .update(tables.companies)
+        .set({ lastPolledAt: new Date(), resolveNote: note })
+        .where(eq(tables.companies.id, c.id));
+      log.warn("generic scrape skipped", { company: c.name, reason: note });
+    }
+    await sleep(150);
+  }
+  return all;
+}
+
 export interface PipelineResult {
   found: number;
   added: number;
@@ -104,6 +217,13 @@ export async function runPipeline(): Promise<PipelineResult> {
   const elapsed = startTimer();
   log.info("run start");
   try {
+    // resolve pending imports first so freshly-found boards sweep this same run
+    try {
+      await resolvePendingCompanies();
+    } catch (err) {
+      log.error("resolution phase failed", { error: String(err).slice(0, 300) });
+    }
+
     const atsJobs = await scrapeAtsBoards();
     const atsIngest = await ingestJobs(atsJobs);
     log.info("ats ingest done", { found: atsJobs.length, added: atsIngest.added });
@@ -124,6 +244,7 @@ export async function runPipeline(): Promise<PipelineResult> {
       ["weworkremotely", fetchWeWorkRemotely],
       ["hn", fetchHnWhoIsHiring],
       ["yc", () => fetchYcJobs(ycKnown)],
+      ["generic", scrapeGenericCareers],
     ] as const) {
       const raw = await recordRun(source, fn);
       aggregated.push(...raw);
@@ -132,6 +253,22 @@ export async function runPipeline(): Promise<PipelineResult> {
     // grow the company list from ATS links found in aggregator posts
     const discovered = await discoverBoards(aggregated);
     if (discovered) log.info("boards discovered", { discovered });
+
+    // board-backed jobs we haven't re-seen in a while are gone from their boards →
+    // closed. Aggregator posts (HN/WWR/RemoteOK) are never re-seen by design — exempt.
+    const closeAfterDays = await getSetting("closeAfterDays", DEFAULTS.closeAfterDays);
+    const cutoff = new Date(Date.now() - closeAfterDays * 24 * 3600_000);
+    const closedRes = await db
+      .update(tables.jobs)
+      .set({ closed: true })
+      .where(
+        and(
+          eq(tables.jobs.closed, false),
+          inArray(tables.jobs.source, [...Object.keys(CONNECTORS), "yc", "generic"]),
+          lt(tables.jobs.lastSeenAt, cutoff)
+        )
+      );
+    if (closedRes.changes > 0) log.info("stale jobs closed", { closed: closedRes.changes, closeAfterDays });
 
     const { scored, queued } = await scoreUnscored();
     const result = {

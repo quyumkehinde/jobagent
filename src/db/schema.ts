@@ -7,21 +7,41 @@ export const companies = sqliteTable(
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
     name: text("name").notNull(),
-    ats: text("ats", { enum: ["greenhouse", "lever", "ashby"] }).notNull(),
+    // normalized (lowercase, diacritics folded, legal suffixes stripped) — bulk-import dedupe key
+    nameNormalized: text("name_normalized"),
+    // null until the resolution engine (or a human) finds this company's board
+    ats: text("ats", {
+      enum: [
+        "greenhouse",
+        "lever",
+        "ashby",
+        "recruitee",
+        "workable",
+        "personio",
+        "smartrecruiters",
+        "breezy",
+        "bamboohr",
+      ],
+    }),
     // board token/slug, e.g. "stripe" for boards-api.greenhouse.io/v1/boards/stripe
-    token: text("token").notNull(),
+    token: text("token"),
     website: text("website"),
-    // null = unknown; set from scoring signals or manually
+    careersUrl: text("careers_url"),
+    country: text("country"),
+    // bulk-import resolution lifecycle; null = pre-existing row (treated as resolved)
+    resolveStatus: text("resolve_status", { enum: ["pending", "probing", "resolved", "unresolved"] }),
+    resolveNote: text("resolve_note"),
+    // null = unknown; set from scoring signals, bulk import, or manually
     visaSponsor: integer("visa_sponsor", { mode: "boolean" }),
     active: integer("active", { mode: "boolean" }).notNull().default(true),
-    // how this board entered the system: "seed" | "discovery" | "manual"
+    // how this board entered the system: "seed" | "discovery" | "manual" | "import"
     origin: text("origin").notNull().default("seed"),
     lastPolledAt: integer("last_polled_at", { mode: "timestamp" }),
     lastError: text("last_error"),
     errorCount: integer("error_count").notNull().default(0),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
   },
-  (t) => [uniqueIndex("companies_ats_token").on(t.ats, t.token)]
+  (t) => [uniqueIndex("companies_ats_token").on(t.ats, t.token), index("companies_name_normalized").on(t.nameNormalized)]
 );
 
 // ---------- Jobs ----------

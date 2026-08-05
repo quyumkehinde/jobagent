@@ -68,7 +68,8 @@ jobagent/
     │   ├── schema.ts          # ALL tables (Drizzle)
     │   └── index.ts           # db client (better-sqlite3, WAL, FK on)
     ├── connectors/            # one file per job source + shared helpers
-    │   ├── types.ts           # RawJob, fetchJson, stripHtml, title prefilter
+    │   ├── types.ts           # RawJob, fetchJson, stripHtml, title prefilter (EN+NL)
+    │   ├── registry.ts        # ATS connector registry: fetch/probe/boardUrl/patterns
     │   ├── greenhouse.ts      # boards-api.greenhouse.io
     │   ├── lever.ts           # api.lever.co/v0/postings
     │   ├── ashby.ts           # api.ashbyhq.com/posting-api
@@ -76,12 +77,16 @@ jobagent/
     │   ├── weworkremotely.ts  # 4 RSS category feeds (hand-rolled parser)
     │   ├── hn.ts              # HN "Who is hiring" via Algolia
     │   ├── yc.ts              # YC job board (ycombinator.com/jobs, public WaaS pages)
+    │   ├── recruitee.ts ├── workable.ts ├── personio.ts   # NL/EU ATS pack
+    │   ├── smartrecruiters.ts ├── breezy.ts ├── bamboohr.ts
+    │   ├── generic.ts         # last-resort careers-page scraper (heuristics + capped LLM)
     │   └── discovery.ts       # extracts ATS board tokens from aggregator posts
     ├── lib/
     │   ├── settings.ts        # settings KV + DEFAULTS
     │   ├── gemini.ts          # Gemini client, throttle, retries, JSON mode
     │   ├── candidate.ts       # builds the candidate summary that grounds all AI calls
     │   ├── ingest.ts          # upsert/dedupe scraped jobs
+    │   ├── resolve.ts         # company→board resolution (probing, name validation, web fallback)
     │   ├── scoring.ts         # batch scoring: score + eligibility + visa signal
     │   ├── pipeline.ts        # orchestrates scrape → ingest → discover → score
     │   ├── forms.ts           # ATS form-schema fetching (FormField)
@@ -111,10 +116,12 @@ Import alias: `@/*` → `src/*` (works in Next and in `tsx` scripts — tsx reso
 
 Timestamps are stored as unix epoch integers (Drizzle `mode: "timestamp"`). JSON is stored as text columns, parsed at the edges.
 
-### `companies` — ATS boards we poll
+### `companies` — ATS boards we poll (and companies still being resolved)
 | column | notes |
 |---|---|
-| `ats` | `greenhouse \| lever \| ashby` |
+| `ats` | one of 9 supported ATSs — **nullable**: imported companies have none until resolved |
+| `nameNormalized` | indexed dedupe key for bulk imports (diacritics folded, legal suffixes stripped) |
+| `careersUrl`, `country`, `resolveStatus`, `resolveNote` | resolution lifecycle: `pending → probing → resolved \| unresolved` (null = pre-existing row) |
 | `token` | board slug, e.g. `stripe` → `boards-api.greenhouse.io/v1/boards/stripe`. Unique per (ats, token). |
 | `origin` | `seed` (from seed/companies.json) · `discovery` (auto-found in aggregator posts) · `manual` (added in Settings) |
 | `visaSponsor` | tri-state: true/false/null(unknown). Shown as a badge; feeds ranking context. |
@@ -160,6 +167,8 @@ One row per lock name (`pipeline` is the only one today): `owner` (pid+nonce), `
 
 ## 5. Connectors (`src/connectors/`)
 
+ATS connectors are registered in **`src/connectors/registry.ts`** (`CONNECTORS`), which is the single source of truth for: `fetchJobs` (the sweep), `probe(slug)` (one cheap request — does this board exist on this ATS, and what company name does it report?), `boardUrl`, and `discoveryPatterns` (URL regexes; discovery and the resolution engine both consume them). Adding an ATS = one connector file + one registry entry. Supported ATSs (9): greenhouse, lever, ashby, **recruitee, workable, personio (XML feed), smartrecruiters, breezy, bamboohr** — the latter six chosen for NL/EU hit-rate. SmartRecruiters/Breezy/BambooHR/Personio-without-feed-content are **two-phase** like the YC connector (list first; per-NEW-job detail fetch, capped per run, never ingest without a description). The title prefilter includes Dutch terms (ontwikkelaar/programmeur; excludes verkoop/klantenservice/…).
+
 All connectors return the same shape, `RawJob`:
 
 ```ts
@@ -186,13 +195,21 @@ Failure isolation: each company board and each aggregator is try/caught individu
 
 ## 6. The pipeline (`src/lib/pipeline.ts`)
 
+### Company resolution (`src/lib/resolve.ts`) — "paste any company list"
+`POST /api/companies/import` takes a pasted list of company names (e.g. the Dutch IND sponsor register; optional CSV `name,country,visaSponsor`), dedupes against existing companies on `nameNormalized` (lowercased, diacritics folded, legal suffixes like B.V./N.V./Stichting/Coöperatie stripped) — existing companies only get their flags updated — and inserts the rest as `resolveStatus: 'pending'`. At the start of every pipeline run, `resolvePendingCompanies()` works through a batch (`resolveBatchPerRun`, default 200): for each company it probes **all 9 ATSs × up to 4 slug candidates** (150 ms gaps, short-circuit on hit). **A hit only resolves if the board's self-reported name matches the company** (containment or bigram-Dice ≥ 0.75; name-less ATSs fall back to the board page's HTML title) — slug collisions can never claim someone else's board; ambiguity lands in `unresolved` with an actionable note. Probe misses fall back (capped at `resolveWebPerRun`/run) to: direct domain guesses (`{slug}.nl/.com`, title-validated) → keyless DuckDuckGo HTML search (anomaly-detection aborts it for the run) → homepage → careers-link crawl (incl. `vacatures`/`werken-bij`) → discovery-pattern scan of those pages. Resolved boards sweep the same run. Manual overrides (set ats+token, set careersUrl, retry) via `PATCH /api/companies`.
+
+### Generic careers-page scraper (`src/connectors/generic.ts`) — last resort
+Unresolved companies **with** a `careersUrl` get a capped generic sweep (`genericCompaniesPerRun` 10/run, oldest-polled first, source `generic`): fetch the page → re-scan for late ATS links (hit → resolve properly) → heuristic job-link extraction (href/text patterns incl. Dutch), following one level of listing-hub links ("Alle vacatures →") → if heuristics find <3 links, ONE Gemini extraction call (`genericGeminiPerRun` cap) → per-new-job page fetch for the description (`externalId` = URL hash; URL moves are healed by closing detection). JS-rendered pages are skipped cleanly (`js-required` note), never junk-ingested.
+
 `runPipeline()` — guarded by an in-process `running` flag **and a cross-process advisory lock** (`locks` table row via `src/lib/lock.ts`, heartbeat every 60 s, stealable after 5 min without a heartbeat so a crashed holder self-heals). The worker and the Next.js server share the DB but not memory — the lock is what stops them scoring the same jobs twice. The API returns 409 if either process is running a pipeline:
 
-1. **ATS sweep** — every `active` company board, sequentially with a 150 ms gap (polite, avoids rate limiting). Per-board success resets `errorCount`; failure increments it (3 strikes → `active = false`).
+0. **Resolution** — `resolvePendingCompanies()` (see above) so freshly-imported boards sweep immediately.
+1. **ATS sweep** — every `active` company board with a resolved ats+token, sequentially with a 150 ms gap (polite, avoids rate limiting). Registry-dispatched; two-phase sources get their known-externalId sets. Per-board success resets `errorCount`; failure increments it (3 strikes → `active = false`).
 2. **Ingest** (`ingest.ts`) — upsert on `(source, externalId)`. Existing jobs: bump `lastSeenAt`, clear `closed`. New jobs: insert with capped field lengths. Returns new-job IDs.
-3. **Aggregator sweep** — RemoteOK, WWR, HN; each wrapped in a `scrapeRuns` row for the dashboard.
-4. **Discovery** — scan aggregator results for new ATS boards.
-5. **Scoring** — see §7.
+3. **Aggregator sweep** — RemoteOK, WWR, HN, YC, generic careers pages; each wrapped in a `scrapeRuns` row for the dashboard.
+4. **Discovery** — scan aggregator results for new ATS boards (patterns from the connector registry, all 9 ATSs).
+5. **Closing detection** — board-backed jobs (ATS sources + yc + generic) not re-seen for `closeAfterDays` (default 14) get `closed = true` and drop out of scoring, queueing, and the actionable feed tabs. Aggregator posts are exempt (never re-seen by design).
+6. **Scoring** — see §7.
 
 The pipeline is triggered three ways: worker cron, `POST /api/pipeline` (fire-and-forget from the Today page button), or on worker startup.
 
@@ -200,7 +217,7 @@ The pipeline is triggered three ways: worker cron, `POST /api/pipeline` (fire-an
 
 **What it does:** turns "3,600 postings" into "a ranked queue of jobs you can actually get."
 
-- Selects unscored jobs (`scoredAt IS NULL AND feedStatus = 'new'`), capped at `maxScoringPerRun` (default 120/run to respect free-tier daily caps).
+- Selects unscored jobs (`scoredAt IS NULL AND feedStatus = 'new' AND closed = 0`), capped at `maxScoringPerRun` (default 120/run to respect free-tier daily caps), **ordered visa-sponsor-companies-first, then newest-first** — so after a large import the queue is useful from day 1 while the backlog drains.
 - Batches **8 jobs per Gemini call** (title + company + location + salary + first 1800 chars of description each), with the candidate summary (§8.1) prepended.
 - Uses Gemini **JSON mode** (`responseSchema`) so output is machine-parseable by construction: per job → `{ index, score, eligibility, visaSignal, roleCategory, reasons[≤3] }`.
 - The system prompt encodes the hard rules: ineligible jobs score <30 regardless of skill fit; eligibility must be read strictly from location language; ambiguity → `unknown` (which stays eligible — better to over-queue than silently drop); visa `yes` only if stated in the posting.
@@ -271,7 +288,8 @@ The **copilot** on the review page takes plain-language instructions ("add Kafka
 | `/api/profile` | GET / PUT | full KV / bulk upsert |
 | `/api/qa` | GET / POST / DELETE | answer bank CRUD |
 | `/api/resumes` | GET / POST | list / multipart upload (`resume` field) + immediate parse |
-| `/api/companies` | GET / POST / PATCH | boards list / manual add / enable·disable (enable resets strikes) |
+| `/api/companies?status=&q=&limit=&offset=` | GET / POST / PATCH | filtered+paged boards list with status counts / manual add / enable·disable, board override (`ats`+`token`), `careersUrl`, `retryResolve` |
+| `/api/companies/import` | POST | bulk company import `{text, defaults}` → `{added, updatedExisting, skipped}`; resolution happens on the next pipeline run |
 | `/api/settings` | GET / PUT | config (API key write-only masked as `•••set•••`) |
 | `/api/analytics` | GET | stage counts, per-source submitted/response, per-week submissions, job stats |
 
@@ -288,7 +306,7 @@ MV3, no build step; load unpacked from `extension/` (README there). Permissions:
 - **Pipeline (`/board`)** — HTML5 drag-and-drop kanban over the application statuses; cards show overdue follow-up warnings; status changes persist via PATCH and log events.
 - **Analytics (`/analytics`)** — submitted count, response rate (responded = screening+interviewing+offer over submitted), interviews, offers; by-source table; per-week submissions; funnel stats (discovered → scored → queued → flagged).
 - **Profile (`/profile`)** — resume upload/parse status, basics, links, the "what applications always ask" intake (work authorization free-text is deliberately precise-form — it's fed verbatim to the AI), extra context, and the answer bank editor.
-- **Settings (`/settings`)** — Gemini key (env-aware), model names, queue threshold, per-company queue cap, scrape interval, per-run scoring cap, and the company-board table (add/enable/disable, error visibility, seed/discovery/manual origin badges).
+- **Settings (`/settings`)** — Gemini key (env-aware), model names, queue threshold, per-company queue cap, scrape interval, per-run scoring cap, close-after days, Gemini call gap (the paid-tier lever), the **bulk-import panel** (paste the IND register → live resolution progress), and the company-board table (add/enable/disable, error visibility, seed/discovery/manual origin badges).
 
 Shared primitives live in `src/components/ui.tsx`; save-on-blur is the form idiom throughout.
 
@@ -297,6 +315,7 @@ Shared primitives live in `src/components/ui.tsx`; save-on-blur is the form idio
 - **Scheduling**: worker cron `5 */N * * *`. Change N in Settings (worker restart required — it reads the setting at boot). For auto-start on login, wrap `npm run worker` in a LaunchAgent plist.
 - **Gemini budget math**: scoring = ~15 calls/120 jobs; drafting ≈ 2 calls/application. At free-tier ~250 requests/day that's roughly 120 scored jobs + ~40 drafted applications — above the 50/day review target. The throttle (§7) keeps RPM legal; RPD exhaustion just delays scoring to the next run.
 - **Logging**: `src/lib/log.ts` — a tiny logfmt-style console logger (`2026-08-04T12:00:00.000Z INFO [pipeline] ats sweep done boards=118 found=3402 ms=41250`). Scopes: `worker`, `pipeline` (run/sweep/ingest/discovery, per-board failures + strike counts), `yc` (slice/detail fetch health), `scoring` (batch progress, quota aborts), `gemini` (retries/backoff), `draft` (form fetch, deterministic/QA-bank/AI answer split, timings), `submit` (attempts, assisted fallbacks with reason). Logs go to the stdout/stderr of whichever process ran the code: the worker terminal for cron runs, the `next dev` terminal for UI-triggered actions. Grep by scope, e.g. `npm run worker 2>&1 | grep '\[scoring\]'`.
+- **Bulk-import scale math** (6,000-company register): resolution ≈ 180–220k HTTP requests total; at 200 companies/run × 8 runs/day the probe pass completes in ~4 days (web-fallback tail longer at 40/run). Expect 25–40% to resolve to a supported ATS, 10–20% careersUrl-only (generic/manual), the rest unresolved (hospitals/universities/Workday shops — Workday support is the biggest future coverage lever). Sweep cost grows ~0.5 s/board. Scoring backlog 8–15k jobs: free tier drains ~960/day (9–16 days, sponsor-first so the good stuff surfaces immediately); paid tier = raise `maxScoringPerRun`, drop `geminiMinIntervalMs` (~500) in Settings — whole backlog costs single-digit dollars on flash and drains in hours. No code change needed.
 - **LaTeX**: resume tailoring needs `tectonic` on PATH (`brew install tectonic`; the first compile downloads packages, later ones are fast). Without it, tailoring fails soft and applications use the default PDF.
 - **Reset scoring** (e.g. after changing the prompt): `sqlite3 data/jobagent.db "UPDATE jobs SET scored_at=NULL, score=NULL WHERE feed_status='new';"`
 - **Postgres migration path**: swap the Drizzle driver/dialect, re-run `db:push`, replace the two raw-SQL analytics queries (`strftime` → `to_char`). Schema and app code otherwise carry over.
@@ -309,8 +328,9 @@ Shared primitives live in `src/components/ui.tsx`; save-on-blur is the form idio
 4. **Eligibility classification is LLM judgment** — strict prompt + `unknown`-stays-eligible biases it toward false positives (wasted review seconds) over false negatives (missed jobs), which is the right failure direction.
 5. **No inbox integration yet** — ghosted/rejected/screening transitions are manual until the v1.5 Gmail sync.
 6. **36 of the 125 seed board tokens were stale** at first run — expected; the 3-strike system retires them and discovery/manual adds replace them.
-7. **YC jobs are snapshot-once and assisted-only** — the detail page is fetched a single time (a later JD edit on YC's side isn't picked up), and applying requires a Work at a Startup login, so programmatic submit is permanently impossible for this source.
-8. **Pipeline mutual exclusion is heartbeat-based** — the DB lock (§6) prevents the UI trigger and the worker from running (and double-scoring) simultaneously. The one rough edge: killing a process mid-run leaves its lock row until the 5-minute heartbeat staleness window passes, so a retrigger inside that window gets a 409 — wait it out or delete the `locks` row.
+7. **Company resolution is conservative by design** — no name validation, no auto-resolve; expect a meaningful unresolved pile (fix via the Settings override, or wait for better evidence). Empty-but-valid boards (e.g. a company with a vestigial Workable account) resolve "correctly" yet yield no jobs — the real careers site then needs the careersUrl/generic path or a manual override. JS-rendered careers pages (`js-required` note) are out of scope until a headless-browser fetcher exists. DuckDuckGo can rate-limit the web fallback (detected, non-fatal, probe path unaffected).
+8. **YC jobs are snapshot-once and assisted-only** — the detail page is fetched a single time (a later JD edit on YC's side isn't picked up), and applying requires a Work at a Startup login, so programmatic submit is permanently impossible for this source.
+9. **Pipeline mutual exclusion is heartbeat-based** — the DB lock (§6) prevents the UI trigger and the worker from running (and double-scoring) simultaneously. The one rough edge: killing a process mid-run leaves its lock row until the 5-minute heartbeat staleness window passes, so a retrigger inside that window gets a 409 — wait it out or delete the `locks` row.
 
 ## 13. Roadmap
 

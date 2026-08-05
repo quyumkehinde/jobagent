@@ -8,8 +8,9 @@ export async function GET(req: NextRequest) {
   const search = sp.get("q");
 
   const conds = [];
-  if (tab === "queued") conds.push(eq(tables.jobs.feedStatus, "queued"));
-  else if (tab === "new") conds.push(eq(tables.jobs.feedStatus, "new"));
+  // closed roles vanish from the actionable tabs (they stay reachable via "all")
+  if (tab === "queued") conds.push(eq(tables.jobs.feedStatus, "queued"), eq(tables.jobs.closed, false));
+  else if (tab === "new") conds.push(eq(tables.jobs.feedStatus, "new"), eq(tables.jobs.closed, false));
   else if (tab === "flagged") conds.push(eq(tables.jobs.eligibility, "country-restricted"));
   else if (tab === "dismissed") conds.push(eq(tables.jobs.feedStatus, "dismissed"));
   if (search) {
