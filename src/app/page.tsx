@@ -83,16 +83,25 @@ export default function Today() {
       </div>
 
       {rateLimits.length > 0 && (
-        <Card className="border-amber-800 bg-amber-950/30">
-          <div className="text-sm text-amber-300">
-            ⚠ Rate limits hit in the last 24h:{" "}
-            {rateLimits
-              .map((r) => `${r.host} (${r.count}× · last ${new Date(r.lastAt).toLocaleTimeString()} · ${r.lastContext})`)
-              .join("  ·  ")}
-          </div>
-          <div className="text-xs text-zinc-500 mt-1">
-            Probing and sweeps back off automatically and retry affected companies next run — no strikes, no false
-            misses. If this persists, lower resolveBatchPerRun in Settings.
+        <Card className="border-amber-900/60 bg-amber-950/20">
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-sm font-medium text-amber-300 shrink-0">⚠ Rate limited (24h)</span>
+            {rateLimits.map((r) => (
+              <span
+                key={r.host}
+                title={r.lastContext}
+                className="inline-flex items-center gap-1.5 rounded-md border border-amber-900/60 bg-zinc-900 px-2 py-0.5 text-xs"
+              >
+                <span className="text-zinc-200">{r.host}</span>
+                <span className="rounded bg-amber-900/50 px-1 font-semibold text-amber-300">{r.count}×</span>
+                <span className="text-zinc-500">
+                  {new Date(r.lastAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                </span>
+              </span>
+            ))}
+            <span className="text-xs text-zinc-500">
+              backing off automatically — affected companies retry next run
+            </span>
           </div>
         </Card>
       )}

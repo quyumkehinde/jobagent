@@ -55,7 +55,7 @@ async function probeJson<T>(url: string): Promise<T | "rate-limited" | null> {
   try {
     const res = await fetch(url, { headers: { "User-Agent": UA, Accept: "application/json" } });
     if (res.status === 429) {
-      await reportRateLimit(host, `probe ${url.slice(0, 60)}`);
+      await reportRateLimit(host, "board probing");
       return "rate-limited";
     }
     if (!res.ok) return null;

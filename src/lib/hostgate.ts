@@ -52,7 +52,9 @@ export async function reportRateLimit(host: string, context: string, cooldownMs 
   }
   try {
     const events = await getSetting<RateLimitEvent[]>("rateLimitEvents", []);
-    events.push({ host, context, at: new Date().toISOString() });
+    // record the platform (registrable domain), not per-company subdomains — the
+    // dashboard should show "personio.de ×4", not four different company hosts
+    events.push({ host: gateKey(host), context, at: new Date().toISOString() });
     await setSetting("rateLimitEvents", events.slice(-50));
   } catch {
     // observability must never break the pipeline
