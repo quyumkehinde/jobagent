@@ -39,6 +39,9 @@ export default function JobsPage() {
   const [expanded, setExpanded] = useState<number | null>(null);
   const [dismissing, setDismissing] = useState<number | null>(null);
   const [dismissReason, setDismissReason] = useState("");
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [bulkReason, setBulkReason] = useState("");
+  const [bulkBusy, setBulkBusy] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [addUrl, setAddUrl] = useState("");
   const [addBusy, setAddBusy] = useState(false);
@@ -50,8 +53,34 @@ export default function JobsPage() {
     const res = await fetch(`/api/jobs?tab=${tab}${q ? `&q=${encodeURIComponent(q)}` : ""}`);
     const data = await res.json();
     setJobs(data.jobs || []);
+    setSelected(new Set()); // stale selections must not survive a tab/search change
     setLoading(false);
   }, [tab, q]);
+
+  const toggleSelect = (id: number) =>
+    setSelected((s) => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const bulkDismiss = async () => {
+    setBulkBusy(true);
+    await fetch("/api/jobs", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ids: [...selected],
+        feedStatus: "dismissed",
+        ...(bulkReason.trim() ? { dismissReason: bulkReason.trim() } : {}),
+      }),
+    });
+    setBulkBusy(false);
+    setBulkReason("");
+    setJobs((js) => js.filter((j) => !selected.has(j.id)));
+    setSelected(new Set());
+  };
 
   useEffect(() => {
     load();
@@ -143,6 +172,40 @@ export default function JobsPage() {
         />
       </div>
 
+      {!loading && jobs.length > 0 && tab !== "dismissed" && (
+        <div className="flex gap-3 items-center flex-wrap">
+          <label className="flex items-center gap-1.5 text-sm text-zinc-400">
+            <input
+              type="checkbox"
+              className="accent-emerald-600"
+              checked={selected.size === jobs.length && jobs.length > 0}
+              onChange={() =>
+                setSelected(selected.size === jobs.length ? new Set() : new Set(jobs.map((j) => j.id)))
+              }
+            />
+            Select all ({jobs.length})
+          </label>
+          {selected.size > 0 && (
+            <>
+              <span className="text-sm text-zinc-300">{selected.size} selected</span>
+              <input
+                className={`${input} !w-96`}
+                placeholder="Why? (optional, applies to all — e.g. “US-only roles at this company”)"
+                value={bulkReason}
+                onChange={(e) => setBulkReason(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && bulkDismiss()}
+              />
+              <button className={btnDanger} onClick={bulkDismiss} disabled={bulkBusy}>
+                {bulkBusy ? "Dismissing…" : `Dismiss ${selected.size}`}
+              </button>
+              <button className={btnSecondary} onClick={() => setSelected(new Set())}>
+                Clear
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
       {loading && <div className="text-zinc-500">Loading…</div>}
       {!loading && jobs.length === 0 && <Card className="text-zinc-400">Nothing here.</Card>}
 
@@ -150,7 +213,15 @@ export default function JobsPage() {
         {jobs.map((j) => (
           <Card key={j.id}>
             <div className="flex items-start justify-between gap-4">
-              <div className="min-w-0">
+              {j.feedStatus !== "dismissed" && (
+                <input
+                  type="checkbox"
+                  className="mt-1.5 accent-emerald-600 shrink-0"
+                  checked={selected.has(j.id)}
+                  onChange={() => toggleSelect(j.id)}
+                />
+              )}
+              <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 flex-wrap">
                   <ScoreBadge score={j.score} />
                   {eligibilityBadge(j.eligibility)}

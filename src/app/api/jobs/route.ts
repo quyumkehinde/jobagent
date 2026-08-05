@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db, tables } from "@/db";
-import { and, desc, eq, like, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, like, or, sql } from "drizzle-orm";
 import { UA, stripHtml } from "@/connectors/types";
 import { genericExternalId } from "@/connectors/generic";
 import { renderPage, closeBrowser } from "@/lib/browser";
@@ -28,6 +28,26 @@ export async function GET(req: NextRequest) {
     limit: 300,
   });
   return NextResponse.json({ jobs: rows });
+}
+
+// PATCH { ids: number[], feedStatus, dismissReason? } — bulk feed-status change
+// (e.g. select-all country-restricted roles of one company → dismiss with one reason,
+// which then feeds the scoring feedback loop as a pattern).
+export async function PATCH(req: NextRequest) {
+  const body = (await req.json()) as { ids?: unknown[]; feedStatus?: string; dismissReason?: string };
+  const ids = Array.isArray(body.ids) ? body.ids.map(Number).filter(Number.isInteger).slice(0, 500) : [];
+  if (!ids.length) return NextResponse.json({ error: "ids required" }, { status: 400 });
+  if (!["new", "queued", "dismissed"].includes(body.feedStatus || ""))
+    return NextResponse.json({ error: "invalid feedStatus" }, { status: 400 });
+
+  const update: Record<string, unknown> = { feedStatus: body.feedStatus };
+  if (body.feedStatus === "dismissed") {
+    update.dismissedAt = new Date();
+    if (typeof body.dismissReason === "string" && body.dismissReason.trim())
+      update.dismissReason = body.dismissReason.trim().slice(0, 300);
+  }
+  const res = await db.update(tables.jobs).set(update).where(inArray(tables.jobs.id, ids));
+  return NextResponse.json({ ok: true, updated: res.changes });
 }
 
 // POST { url, title?, companyName? } — manually add a job listing by URL. The page is
