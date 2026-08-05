@@ -148,10 +148,18 @@ export async function scoreUnscored(limit?: number): Promise<{ scored: number; q
       location: tables.jobs.location,
       salary: tables.jobs.salary,
       description: tables.jobs.description,
+      feedStatus: tables.jobs.feedStatus,
     })
     .from(tables.jobs)
     .leftJoin(tables.companies, eq(tables.jobs.companyId, tables.companies.id))
-    .where(and(isNull(tables.jobs.scoredAt), eq(tables.jobs.feedStatus, "new"), eq(tables.jobs.closed, false)))
+    // "queued" is included for manually-added jobs, which enter the queue unscored
+    .where(
+      and(
+        isNull(tables.jobs.scoredAt),
+        inArray(tables.jobs.feedStatus, ["new", "queued"]),
+        eq(tables.jobs.closed, false)
+      )
+    )
     .orderBy(desc(tables.companies.visaSponsor), desc(tables.jobs.firstSeenAt))
     .limit(maxPerRun);
   if (unscored.length === 0) {
@@ -203,7 +211,8 @@ export async function scoreUnscored(limit?: number): Promise<{ scored: number; q
         const job = batch[r.index];
         if (!job) continue;
         const eligible = QUEUE_ELIGIBLE.includes(r.eligibility);
-        const shouldQueue = r.score >= threshold && eligible;
+        // a job the user queued by hand stays queued no matter what the model thinks
+        const shouldQueue = (r.score >= threshold && eligible) || job.feedStatus === "queued";
         await db
           .update(tables.jobs)
           .set({

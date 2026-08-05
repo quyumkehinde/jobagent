@@ -39,6 +39,10 @@ export default function JobsPage() {
   const [expanded, setExpanded] = useState<number | null>(null);
   const [dismissing, setDismissing] = useState<number | null>(null);
   const [dismissReason, setDismissReason] = useState("");
+  const [showAdd, setShowAdd] = useState(false);
+  const [addUrl, setAddUrl] = useState("");
+  const [addBusy, setAddBusy] = useState(false);
+  const [addNote, setAddNote] = useState<string | null>(null);
   const router = useRouter();
 
   const load = useCallback(async () => {
@@ -73,9 +77,54 @@ export default function JobsPage() {
     else alert(`Draft failed: ${data.error || "unknown error"}`);
   };
 
+  const addJob = async () => {
+    setAddBusy(true);
+    setAddNote(null);
+    const res = await fetch("/api/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: addUrl.trim() }),
+    });
+    const data = await res.json();
+    setAddBusy(false);
+    if (data.error) setAddNote(`Error: ${data.error}`);
+    else if (data.existed) setAddNote("Already tracked — it's in your feed.");
+    else {
+      setAddNote(
+        `Added: "${data.extracted.title}" at ${data.extracted.companyName} (${data.extracted.descriptionChars} chars of description). Queued — scoring follows next run.`
+      );
+      setAddUrl("");
+      setTab("queued");
+      load();
+    }
+  };
+
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold">Jobs</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">Jobs</h1>
+        <button className={btnSecondary} onClick={() => setShowAdd(!showAdd)}>
+          {showAdd ? "Close" : "+ Add job by URL"}
+        </button>
+      </div>
+      {showAdd && (
+        <Card className="space-y-2">
+          <div className="flex gap-2">
+            <input
+              autoFocus
+              className={`${input} flex-1`}
+              placeholder="Paste a job posting URL — any site"
+              value={addUrl}
+              onChange={(e) => setAddUrl(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && addUrl.trim() && addJob()}
+            />
+            <button className={btnPrimary} onClick={addJob} disabled={addBusy || !addUrl.trim()}>
+              {addBusy ? "Fetching…" : "Add"}
+            </button>
+          </div>
+          {addNote && <p className="text-sm text-emerald-300">{addNote}</p>}
+        </Card>
+      )}
       <div className="flex gap-2 flex-wrap items-center">
         {TABS.map((t) => (
           <button

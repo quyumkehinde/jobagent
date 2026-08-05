@@ -280,7 +280,7 @@ The **copilot** on the review page takes plain-language instructions ("add Kafka
 | route | methods | purpose |
 |---|---|---|
 | `/api/pipeline` | GET / POST | last 20 scrape runs + running flag / fire-and-forget full run (409 if running) |
-| `/api/jobs?tab=&q=` | GET | feed query; tabs: `queued`, `new`, `flagged` (eligibility=country-restricted), `dismissed`, `all`; sorted score desc, nulls last |
+| `/api/jobs?tab=&q=` | GET / POST | feed query (tabs: `queued`, `new`, `flagged`, `dismissed`, `all`; score desc, nulls last) / **manual add by URL** `{url, title?, companyName?}` — page fetched (rendered if JS), fields extracted, ingested as `source: manual`, straight to queued; scored next run and never demoted by the model |
 | `/api/jobs/[id]` | GET / PATCH | job detail / feedStatus change (queue·dismiss·restore) |
 | `/api/jobs/[id]/draft` | POST | run `draftApplication` → `{applicationId, aiCount, needsReview}` |
 | `/api/applications?status=` | GET | list (single status or comma list) joined with jobs |
@@ -306,7 +306,7 @@ MV3, no build step; load unpacked from `extension/` (README there). Permissions:
 ## 10. UI (all client components, dark theme, Tailwind v4)
 
 - **Today (`/`)** — stat cards (ready for review / queued / follow-ups due), review shortcuts, due follow-ups, top of queue, scrape-run health table, the **Scrape & score now** button. Polls every 15 s.
-- **Jobs (`/jobs`)** — tabbed ranked feed. Each card: score badge (green ≥75 / yellow ≥55 / red), eligibility badge, visa badge, role category, source, salary; **Why?** expands the model's reasons; **Draft application** → drafts and routes to the review screen; Dismiss (with optional why — feeds the scorer)/Restore; the Dismissed tab shows stored reasons.
+- **Jobs (`/jobs`)** — tabbed ranked feed, plus **"+ Add job by URL"** (paste any posting; extraction + queueing is automatic). Each card: score badge (green ≥75 / yellow ≥55 / red), eligibility badge, visa badge, role category, source, salary; **Why?** expands the model's reasons; **Draft application** → drafts and routes to the review screen; Dismiss (with optional why — feeds the scorer)/Restore; the Dismissed tab shows stored reasons.
 - **Application review (`/applications/[id]`)** — the money screen: status selector, submit panel (auto-submit where supported / open form / mark-as-applied), the **copilot box** (plain-language edits to resume/cover letter/answers), the **resume card** (tailored-vs-default status, view PDF, re-tailor), every answer as an editor (type-appropriate input, confidence badge, copy button, save + remember), cover-letter editor, next-action reminder, notes, event timeline, JD snapshot.
 - **Pipeline (`/board`)** — HTML5 drag-and-drop kanban over the application statuses; cards show overdue follow-up warnings; status changes persist via PATCH and log events.
 - **Analytics (`/analytics`)** — submitted count, response rate (responded = screening+interviewing+offer over submitted), interviews, offers; by-source table; per-week submissions; funnel stats (discovered → scored → queued → flagged).
