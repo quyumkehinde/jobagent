@@ -16,14 +16,26 @@ const lastHit = new Map<string, number>();
 const coolUntil = new Map<string, number>();
 const lastWarned = new Map<string, number>();
 
+// Politeness is per PLATFORM, not per hostname: {slug}.recruitee.com probes are all
+// distinct hosts but one rate limiter. Key on the registrable domain (last two labels).
+function gateKey(host: string): string {
+  const labels = host.toLowerCase().split(".");
+  return labels.slice(-2).join(".");
+}
+
 export function hostCoolingDown(host: string): boolean {
-  return (coolUntil.get(host) ?? 0) > Date.now();
+  return (coolUntil.get(gateKey(host)) ?? 0) > Date.now();
 }
 
 export async function hostGate(host: string): Promise<void> {
-  const wait = (lastHit.get(host) ?? 0) + MIN_HOST_INTERVAL_MS - Date.now();
+  const key = gateKey(host);
+  // reserve the next slot BEFORE sleeping, so concurrent callers queue up correctly
+  // instead of all sleeping until the same moment and firing together
+  const now = Date.now();
+  const slot = Math.max(lastHit.get(key) ?? 0, now - MIN_HOST_INTERVAL_MS) + MIN_HOST_INTERVAL_MS;
+  lastHit.set(key, slot);
+  const wait = slot - now;
   if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-  lastHit.set(host, Date.now());
 }
 
 export interface RateLimitEvent {
@@ -33,9 +45,9 @@ export interface RateLimitEvent {
 }
 
 export async function reportRateLimit(host: string, context: string, cooldownMs = DEFAULT_COOLDOWN_MS): Promise<void> {
-  if (cooldownMs > 0) coolUntil.set(host, Date.now() + cooldownMs);
-  if (Date.now() - (lastWarned.get(host) ?? 0) > 60_000) {
-    lastWarned.set(host, Date.now());
+  if (cooldownMs > 0) coolUntil.set(gateKey(host), Date.now() + cooldownMs);
+  if (Date.now() - (lastWarned.get(gateKey(host)) ?? 0) > 60_000) {
+    lastWarned.set(gateKey(host), Date.now());
     log.warn("rate limited — backing off", { host, context, cooldownMin: Math.round(cooldownMs / 60_000) });
   }
   try {

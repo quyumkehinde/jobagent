@@ -2,7 +2,7 @@ import { db, tables } from "@/db";
 import { and, eq } from "drizzle-orm";
 import { UA, stripHtml } from "@/connectors/types";
 import { createRenderBudget } from "./browser";
-import { reportRateLimit } from "./hostgate";
+import { hostGate, reportRateLimit } from "./hostgate";
 import { CONNECTORS, PROBE_ORDER, AtsName } from "@/connectors/registry";
 import { scanForBoards } from "@/connectors/discovery";
 import { getSetting, DEFAULTS } from "./settings";
@@ -109,52 +109,73 @@ interface Hit {
 // resolve to someone else's board. A validated hit with a KNOWN-ZERO job count (vestigial
 // account, e.g. a company that migrated ATS) is held as a fallback while we keep probing
 // for a non-empty board.
+interface AtsProbeOutcome {
+  liveHit: Hit | null;
+  emptyHit: Hit | null;
+  rateLimited: boolean;
+  notes: string[];
+}
+
+// One platform, slugs in sequence (pacing per platform comes from hostGate).
+async function probeOneAts(conn: NonNullable<(typeof CONNECTORS)[AtsName]>, slugs: string[], companyName: string): Promise<AtsProbeOutcome> {
+  const out: AtsProbeOutcome = { liveHit: null, emptyHit: null, rateLimited: false, notes: [] };
+  for (const slug of slugs) {
+    const probe = await conn.probe(slug);
+    if (probe.rateLimited) {
+      // this platform is throttling us — a "miss" from it proves nothing; stop asking
+      out.rateLimited = true;
+      return out;
+    }
+    if (!probe.exists) continue;
+    let hit: Hit | null = null;
+    if (probe.boardName) {
+      if (!namesMatch(companyName, probe.boardName)) {
+        out.notes.push(`${conn.ats}/${slug} exists but is "${probe.boardName}" — name mismatch`);
+        continue;
+      }
+      hit = { ats: conn.ats, token: slug, boardName: probe.boardName };
+    } else if (await boardPageMatches(conn.ats, slug, companyName)) {
+      hit = { ats: conn.ats, token: slug };
+    } else {
+      out.notes.push(`${conn.ats}/${slug} exists but name unverifiable`);
+      continue;
+    }
+    if (probe.jobCount === 0) {
+      if (!out.emptyHit) out.emptyHit = hit;
+      out.notes.push(`${conn.ats}/${slug} validated but has 0 jobs — kept looking for a live board`);
+      continue;
+    }
+    out.liveHit = hit;
+    return out;
+  }
+  return out;
+}
+
+// All platforms probed IN PARALLEL (the per-platform hostGate keeps each one polite);
+// the winner is picked deterministically in PROBE_ORDER priority afterward. This is the
+// difference between ~20s and ~2s per company — Workable has no reason to wait for Recruitee.
 async function probeAll(
   company: { name: string },
   notes: string[]
 ): Promise<{ hit: Hit | null; sawRateLimit: boolean }> {
   const slugs = slugCandidates(company.name);
+  const outcomes = await Promise.all(
+    PROBE_ORDER.map(async (ats) => {
+      const conn = CONNECTORS[ats as AtsName];
+      return conn ? probeOneAts(conn, slugs, company.name) : null;
+    })
+  );
   let emptyHit: Hit | null = null;
   let sawRateLimit = false;
-  for (const ats of PROBE_ORDER) {
-    const conn = CONNECTORS[ats as AtsName];
-    if (!conn) continue;
-    for (const slug of slugs) {
-      const probe = await conn.probe(slug);
-      await sleep(150);
-      if (probe.rateLimited) {
-        // that ATS is throttling us — a "miss" from it proves nothing; skip it entirely
-        sawRateLimit = true;
-        break;
-      }
-      if (!probe.exists) continue;
-      if (probe.boardName) {
-        if (!namesMatch(company.name, probe.boardName)) {
-          notes.push(`${conn.ats}/${slug} exists but is "${probe.boardName}" — name mismatch`);
-          continue;
-        }
-        const hit = { ats: conn.ats, token: slug, boardName: probe.boardName };
-        if (probe.jobCount === 0) {
-          if (!emptyHit) emptyHit = hit;
-          notes.push(`${conn.ats}/${slug} validated but has 0 jobs — kept looking for a live board`);
-          continue;
-        }
-        return { hit, sawRateLimit };
-      }
-      // no name in the API — try the board's public page title
-      if (await boardPageMatches(conn.ats, slug, company.name)) {
-        const hit = { ats: conn.ats, token: slug };
-        if (probe.jobCount === 0) {
-          if (!emptyHit) emptyHit = hit;
-          notes.push(`${conn.ats}/${slug} validated but has 0 jobs — kept looking for a live board`);
-          continue;
-        }
-        return { hit, sawRateLimit };
-      }
-      notes.push(`${conn.ats}/${slug} exists but name unverifiable`);
-    }
+  let liveHit: Hit | null = null;
+  for (const o of outcomes) {
+    if (!o) continue;
+    notes.push(...o.notes);
+    if (o.rateLimited) sawRateLimit = true;
+    if (!liveHit && o.liveHit) liveHit = o.liveHit; // outcomes are in PROBE_ORDER
+    if (!emptyHit && o.emptyHit) emptyHit = o.emptyHit;
   }
-  return { hit: emptyHit, sawRateLimit }; // better an empty validated board than nothing — the generic sweep covers it
+  return { hit: liveHit || emptyHit, sawRateLimit };
 }
 
 // ---------- web fallback (keyless) --------------------------------------------------
@@ -171,6 +192,7 @@ let renderFn: ((url: string) => Promise<string | null>) | null = null;
 
 async function ddgFindWebsite(name: string, country: string | null): Promise<string | null> {
   if (ddgBlockedThisRun) return null;
+  await hostGate("html.duckduckgo.com"); // concurrent resolvers must not gang up on DDG
   const q = encodeURIComponent(`${name} ${country || ""} careers`);
   const html = await fetchHtml(`https://html.duckduckgo.com/html/?q=${q}`);
   await sleep(2500); // DDG is generous but not infinitely so
@@ -417,21 +439,30 @@ export async function resolvePendingCompanies(): Promise<{ resolved: number; unr
   let resolved = 0;
   let unresolved = 0;
   let webUsed = 0;
-  for (const c of pending) {
-    try {
-      const outcome = await resolveCompany(c.id, webUsed < webCap);
-      if (outcome.usedWeb) webUsed++;
-      if (outcome.status === "resolved") resolved++;
-      else if (outcome.status === "unresolved") unresolved++;
-      // deferred stays pending for a future run
-    } catch (err) {
-      log.warn("resolve failed", { company: c.name, error: String(err).slice(0, 200) });
-      await db
-        .update(tables.companies)
-        .set({ resolveStatus: "pending", resolveNote: `error: ${String(err).slice(0, 200)}` })
-        .where(eq(tables.companies.id, c.id));
-    }
-  }
+  // several companies in flight at once — per-platform politeness is enforced by
+  // hostGate, so concurrency here costs the ATSs nothing extra per second
+  const queue = [...pending];
+  const CONCURRENCY = 4;
+  await Promise.all(
+    Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
+      while (queue.length) {
+        const c = queue.shift()!;
+        try {
+          const outcome = await resolveCompany(c.id, webUsed < webCap);
+          if (outcome.usedWeb) webUsed++;
+          if (outcome.status === "resolved") resolved++;
+          else if (outcome.status === "unresolved") unresolved++;
+          // deferred stays pending for a future run
+        } catch (err) {
+          log.warn("resolve failed", { company: c.name, error: String(err).slice(0, 200) });
+          await db
+            .update(tables.companies)
+            .set({ resolveStatus: "pending", resolveNote: `error: ${String(err).slice(0, 200)}` })
+            .where(eq(tables.companies.id, c.id));
+        }
+      }
+    })
+  );
   const remaining = (
     await db.query.companies.findMany({ where: eq(tables.companies.resolveStatus, "pending"), columns: { id: true } })
   ).length;
