@@ -190,36 +190,72 @@ let ddgBlockedThisRun = false;
 // per-batch headless render budget for JS-shell careers pages (set in resolvePendingCompanies)
 let renderFn: ((url: string) => Promise<string | null>) | null = null;
 
-async function ddgFindWebsite(name: string, country: string | null): Promise<string | null> {
-  if (ddgBlockedThisRun) return null;
-  await hostGate("html.duckduckgo.com"); // concurrent resolvers must not gang up on DDG
-  const q = encodeURIComponent(`${name} ${country || ""} careers`);
-  const html = await fetchHtml(`https://html.duckduckgo.com/html/?q=${q}`);
-  await sleep(2500); // DDG is generous but not infinitely so
-  if (!html) return null;
-  if (/anomaly|captcha|challenge/i.test(html) || !html.includes("uddg=")) {
-    ddgBlockedThisRun = true;
-    await reportRateLimit("html.duckduckgo.com", "web-search fallback", 0);
-    log.warn("duckduckgo blocked/empty — web fallback disabled for this run");
-    return null;
-  }
-  const links = [...html.matchAll(/uddg=([^&"]+)/g)].map((m) => {
-    try {
-      return decodeURIComponent(m[1]);
-    } catch {
-      return "";
-    }
-  });
+// job-board-ish hostnames that aren't in the fixed blocklist (afedjob.com, werkzoeken
+// clones, recruiters…) — a company's own site almost never has these words in its DOMAIN
+const JOBBY_HOST_RE = /(job|vacatur|vacan|career|recruit|werving|uitzend|talent)/i;
+
+// Search results are untrusted: accept a domain ONLY if its homepage title matches the
+// company name — same validation rule the ATS probes live by.
+async function firstValidatedDomain(links: string[], companyName: string): Promise<string | null> {
+  const candidates: string[] = [];
   for (const link of links) {
     try {
       const u = new URL(link);
-      if (AGGREGATOR_DOMAINS.test(u.host)) continue;
-      return `${u.protocol}//${u.host}`;
+      if (AGGREGATOR_DOMAINS.test(u.host) || JOBBY_HOST_RE.test(u.host)) continue;
+      const origin = `${u.protocol}//${u.host}`;
+      if (!candidates.includes(origin)) candidates.push(origin);
     } catch {
       continue;
     }
   }
+  for (const origin of candidates.slice(0, 3)) {
+    const html = await fetchHtml(origin, 8000);
+    if (html && pageNames(html).some((n) => namesMatch(companyName, n))) return origin;
+  }
   return null;
+}
+
+// The static HTML endpoint sits behind bot detection (TLS/header fingerprinting — it can
+// block the very first request). Real headless Chrome passes as a real browser, so when
+// the static endpoint is blocked we fall back to rendering the JS search page — same
+// pacing, same per-run caps, only ever one lookup per company.
+async function ddgRenderSearch(q: string, companyName: string, render = renderFn): Promise<string | null> {
+  if (!render) return null;
+  await hostGate("duckduckgo.com");
+  const html = await render(`https://duckduckgo.com/?q=${q}&ia=web`);
+  await sleep(2500);
+  if (!html || /anomaly|captcha|challenge/i.test(html)) return null;
+  const links = [...html.matchAll(/href="(https?:\/\/[^"]+)"/g)]
+    .map((m) => m[1])
+    .filter((l) => !/duckduckgo\.com|duck\.co|\.ico|\.css|\.js/i.test(l));
+  return firstValidatedDomain(links, companyName);
+}
+
+async function ddgFindWebsite(
+  name: string,
+  country: string | null,
+  render?: (url: string) => Promise<string | null>
+): Promise<string | null> {
+  const q = encodeURIComponent(`${name} ${country || ""} careers`);
+  if (!ddgBlockedThisRun) {
+    await hostGate("html.duckduckgo.com"); // concurrent resolvers must not gang up on DDG
+    const html = await fetchHtml(`https://html.duckduckgo.com/html/?q=${q}`);
+    await sleep(2500); // DDG is generous but not infinitely so
+    if (html && !/anomaly|captcha|challenge/i.test(html) && html.includes("uddg=")) {
+      const links = [...html.matchAll(/uddg=([^&"]+)/g)].map((m) => {
+        try {
+          return decodeURIComponent(m[1]);
+        } catch {
+          return "";
+        }
+      });
+      return firstValidatedDomain(links, name);
+    }
+    ddgBlockedThisRun = true;
+    await reportRateLimit("html.duckduckgo.com", "web-search fallback (static endpoint)", 0);
+    log.warn("duckduckgo static endpoint blocked — switching to headless-rendered search");
+  }
+  return ddgRenderSearch(q, name, render ?? renderFn);
 }
 
 // Domain guesses are free: {slug}.nl / .com — but only trusted when the page title
@@ -243,6 +279,7 @@ function extractCareersLinks(html: string, baseUrl: string): string[] {
   let m: RegExpExecArray | null;
   while ((m = aRe.exec(html))) {
     const href = m[1];
+    if (/cdn-cgi|mailto:|tel:/i.test(href)) continue; // Cloudflare plumbing, not links
     const text = m[2].replace(/<[^>]+>/g, " ");
     if (!CAREERS_LINK_RE.test(href) && !CAREERS_LINK_RE.test(text)) continue;
     try {
@@ -305,14 +342,19 @@ async function findViaWeb(company: { name: string; country: string | null; websi
 // Locate a company's careers page without full re-resolution: website (stored → domain
 // guess → web search) → homepage → first careers link. Persists what it finds. Used by
 // the generic sweep for companies whose validated board turned out to be empty.
-export async function discoverCareersUrl(company: {
-  id: number;
-  name: string;
-  country: string | null;
-  website: string | null;
-}): Promise<string | null> {
+export async function discoverCareersUrl(
+  company: {
+    id: number;
+    name: string;
+    country: string | null;
+    website: string | null;
+  },
+  render?: (url: string) => Promise<string | null>
+): Promise<string | null> {
   const website =
-    company.website || (await guessWebsite(company.name)) || (await ddgFindWebsite(company.name, company.country));
+    company.website ||
+    (await guessWebsite(company.name)) ||
+    (await ddgFindWebsite(company.name, company.country, render));
   if (!website) return null;
   const homepage = await fetchHtml(website);
   const careersUrl = homepage ? extractCareersLinks(homepage, website)[0] || null : null;

@@ -152,7 +152,7 @@ export async function scrapeGenericCareers(): Promise<RawJob[]> {
   for (const c of candidates) {
     if (c.careersUrl || careersDiscoveries >= 5) continue;
     careersDiscoveries++;
-    const found = await discoverCareersUrl(c);
+    const found = await discoverCareersUrl(c, render);
     if (found) {
       c.careersUrl = found;
       await db
