@@ -1,5 +1,5 @@
 import { db, tables } from "@/db";
-import { and, eq, inArray, isNotNull, lt } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, lt, notExists, or, sql } from "drizzle-orm";
 import { CONNECTORS } from "@/connectors/registry";
 import { fetchRemoteOk } from "@/connectors/remoteok";
 import { fetchWeWorkRemotely } from "@/connectors/weworkremotely";
@@ -9,7 +9,7 @@ import { discoverBoards } from "@/connectors/discovery";
 import { RawJob } from "@/connectors/types";
 import { ingestJobs } from "./ingest";
 import { scoreUnscored } from "./scoring";
-import { resolvePendingCompanies } from "./resolve";
+import { resolvePendingCompanies, discoverCareersUrl } from "./resolve";
 import { fetchGenericCareers, JsRequiredError } from "@/connectors/generic";
 import { createRenderBudget, closeBrowser } from "./browser";
 import { generateJSON } from "./gemini";
@@ -108,24 +108,56 @@ export async function scrapeAtsBoards(): Promise<RawJob[]> {
   return all;
 }
 
-// Generic careers-page sweep: unresolved imports that at least have a careersUrl.
+// Generic careers-page sweep, two constituencies:
+//  1. unresolved imports that at least have a careersUrl;
+//  2. RESOLVED companies whose validated board currently yields ZERO live jobs — vestigial
+//     ATS accounts (a Workable ghost while the real jobs live on the company site). These
+//     drop back out automatically the moment their board produces jobs.
 // Runs as its own aggregator-style source ("generic") with hard caps.
-async function scrapeGenericCareers(): Promise<RawJob[]> {
+export async function scrapeGenericCareers(): Promise<RawJob[]> {
   const perRun = await getSetting("genericCompaniesPerRun", DEFAULTS.genericCompaniesPerRun);
   const maxJobs = await getSetting("genericJobsPerCompany", DEFAULTS.genericJobsPerCompany);
   const geminiCap = await getSetting("genericGeminiPerRun", DEFAULTS.genericGeminiPerRun);
   const render = createRenderBudget(await getSetting("headlessPagesPerRun", DEFAULTS.headlessPagesPerRun));
 
-  const candidates = await db.query.companies.findMany({
-    where: and(
-      eq(tables.companies.active, true),
-      eq(tables.companies.resolveStatus, "unresolved"),
-      isNotNull(tables.companies.careersUrl)
-    ),
-    orderBy: (t, { asc }) => asc(t.lastPolledAt),
-    limit: perRun,
-  });
+  const hasLiveJobs = db
+    .select({ one: sql`1` })
+    .from(tables.jobs)
+    .where(and(eq(tables.jobs.companyId, tables.companies.id), eq(tables.jobs.closed, false)));
+
+  const candidates = await db
+    .select()
+    .from(tables.companies)
+    .where(
+      and(
+        eq(tables.companies.active, true),
+        or(
+          and(eq(tables.companies.resolveStatus, "unresolved"), isNotNull(tables.companies.careersUrl)),
+          and(isNotNull(tables.companies.ats), isNotNull(tables.companies.token), notExists(hasLiveJobs))
+        )
+      )
+    )
+    .orderBy(asc(tables.companies.lastPolledAt))
+    .limit(perRun);
   if (!candidates.length) return [];
+
+  // board-empty companies may not have a careersUrl yet — discover a few per run
+  let careersDiscoveries = 0;
+  for (const c of candidates) {
+    if (c.careersUrl || careersDiscoveries >= 5) continue;
+    careersDiscoveries++;
+    const found = await discoverCareersUrl(c);
+    if (found) {
+      c.careersUrl = found;
+      await db
+        .update(tables.companies)
+        .set({ resolveNote: `board ${c.ats}/${c.token} has no live jobs — scraping careers page instead` })
+        .where(eq(tables.companies.id, c.id));
+      log.info("empty board — careers page discovered", { company: c.name, careersUrl: found });
+    } else {
+      await db.update(tables.companies).set({ lastPolledAt: new Date() }).where(eq(tables.companies.id, c.id));
+    }
+  }
 
   const knownRows = await db.query.jobs.findMany({
     where: eq(tables.jobs.source, "generic"),
@@ -161,9 +193,10 @@ async function scrapeGenericCareers(): Promise<RawJob[]> {
 
   const all: RawJob[] = [];
   for (const c of candidates) {
+    if (!c.careersUrl) continue; // no page to scrape (discovery failed or over cap)
     try {
       const result = await fetchGenericCareers(
-        { id: c.id, name: c.name, careersUrl: c.careersUrl! },
+        { id: c.id, name: c.name, careersUrl: c.careersUrl },
         { maxJobs, knownExternalIds: known, tryGeminiExtract, render }
       );
       if (result.atsHit) {

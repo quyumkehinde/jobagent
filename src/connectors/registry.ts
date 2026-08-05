@@ -118,11 +118,11 @@ const workable: AtsConnector = {
   fetchJobs: (t, n, id) => fetchWorkable(t, n, id),
   async probe(token) {
     // beware: some bad slugs return 200 with a text body — probeJson's parse fails → null
-    const data = await probeJson<{ name?: string }>(
+    const data = await probeJson<{ name?: string; jobs?: unknown[] }>(
       `https://apply.workable.com/api/v1/widget/accounts/${encodeURIComponent(token)}?details=false`
     );
     if (!data || !data.name) return { exists: false };
-    return { exists: true, boardName: data.name };
+    return { exists: true, boardName: data.name, jobCount: Array.isArray(data.jobs) ? data.jobs.length : undefined };
   },
   boardUrl: (t) => `https://apply.workable.com/${t}/`,
   discoveryPatterns: [/apply\.workable\.com\/([a-z0-9_-]+)/gi],

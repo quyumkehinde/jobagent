@@ -105,9 +105,12 @@ interface Hit {
 
 // Probe every registered ATS with every slug candidate; return the first VALIDATED hit.
 // Unvalidated hits are recorded in `notes` but never claimed — a slug collision must not
-// resolve to someone else's board.
+// resolve to someone else's board. A validated hit with a KNOWN-ZERO job count (vestigial
+// account, e.g. a company that migrated ATS) is held as a fallback while we keep probing
+// for a non-empty board.
 async function probeAll(company: { name: string }, notes: string[]): Promise<Hit | null> {
   const slugs = slugCandidates(company.name);
+  let emptyHit: Hit | null = null;
   for (const ats of PROBE_ORDER) {
     const conn = CONNECTORS[ats as AtsName];
     if (!conn) continue;
@@ -116,16 +119,32 @@ async function probeAll(company: { name: string }, notes: string[]): Promise<Hit
       await sleep(150);
       if (!probe.exists) continue;
       if (probe.boardName) {
-        if (namesMatch(company.name, probe.boardName)) return { ats: conn.ats, token: slug, boardName: probe.boardName };
-        notes.push(`${conn.ats}/${slug} exists but is "${probe.boardName}" — name mismatch`);
-        continue;
+        if (!namesMatch(company.name, probe.boardName)) {
+          notes.push(`${conn.ats}/${slug} exists but is "${probe.boardName}" — name mismatch`);
+          continue;
+        }
+        const hit = { ats: conn.ats, token: slug, boardName: probe.boardName };
+        if (probe.jobCount === 0) {
+          if (!emptyHit) emptyHit = hit;
+          notes.push(`${conn.ats}/${slug} validated but has 0 jobs — kept looking for a live board`);
+          continue;
+        }
+        return hit;
       }
       // no name in the API — try the board's public page title
-      if (await boardPageMatches(conn.ats, slug, company.name)) return { ats: conn.ats, token: slug };
+      if (await boardPageMatches(conn.ats, slug, company.name)) {
+        const hit = { ats: conn.ats, token: slug };
+        if (probe.jobCount === 0) {
+          if (!emptyHit) emptyHit = hit;
+          notes.push(`${conn.ats}/${slug} validated but has 0 jobs — kept looking for a live board`);
+          continue;
+        }
+        return hit;
+      }
       notes.push(`${conn.ats}/${slug} exists but name unverifiable`);
     }
   }
-  return null;
+  return emptyHit; // better an empty validated board than nothing — the generic sweep covers it
 }
 
 // ---------- web fallback (keyless) --------------------------------------------------
@@ -245,6 +264,27 @@ async function findViaWeb(company: { name: string; country: string | null; websi
   if (careersLinks.length) notes.push(`careers page found, no supported ATS detected`);
   else notes.push(`website found, no careers link detected`);
   return { website, careersUrl: careersLinks[0] };
+}
+
+// Locate a company's careers page without full re-resolution: website (stored → domain
+// guess → web search) → homepage → first careers link. Persists what it finds. Used by
+// the generic sweep for companies whose validated board turned out to be empty.
+export async function discoverCareersUrl(company: {
+  id: number;
+  name: string;
+  country: string | null;
+  website: string | null;
+}): Promise<string | null> {
+  const website =
+    company.website || (await guessWebsite(company.name)) || (await ddgFindWebsite(company.name, company.country));
+  if (!website) return null;
+  const homepage = await fetchHtml(website);
+  const careersUrl = homepage ? extractCareersLinks(homepage, website)[0] || null : null;
+  await db
+    .update(tables.companies)
+    .set({ website, ...(careersUrl ? { careersUrl } : {}) })
+    .where(eq(tables.companies.id, company.id));
+  return careersUrl;
 }
 
 // ---------- the engine --------------------------------------------------------------
