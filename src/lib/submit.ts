@@ -59,6 +59,23 @@ export async function submitLever(
   const resume = await getResumeForApplication(applicationId);
   const fd = buildLeverForm(answers, resume);
 
+  // Custom-question answers (cards[<id>][field<N>]) only register if the matching hidden
+  // baseTemplate blob is posted too, exactly as the real form does — fetch it fresh.
+  if (answers.some((a) => a.fieldKey.startsWith("cards["))) {
+    const page = await fetch(applyUrl, { headers: { "User-Agent": UA, Accept: "text/html" } });
+    const html = page.ok ? await page.text() : "";
+    const unescape = (s: string) =>
+      s.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#0?39;|&apos;/g, "'");
+    let found = 0;
+    for (const tag of html.matchAll(/<input[^>]*name="(cards\[[^\]]+\]\[baseTemplate\])"[^>]*>/gi)) {
+      const value = /value="([^"]*)"/i.exec(tag[0])?.[1];
+      if (value === undefined) continue;
+      fd.append(unescape(tag[1]), unescape(value));
+      found++;
+    }
+    if (!found) throw new SubmitNotPossibleError("Lever card templates not found on apply page");
+  }
+
   const res = await fetch(applyUrl, {
     method: "POST",
     headers: { "User-Agent": UA, Referer: `${jobUrl}/apply`, Origin: "https://jobs.lever.co" },
