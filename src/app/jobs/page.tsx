@@ -22,6 +22,12 @@ interface Job {
   postedAt: string | null;
 }
 
+interface DraftStatus {
+  status: "pending" | "drafting" | "done" | "failed";
+  applicationId?: number;
+  error?: string;
+}
+
 const TABS = [
   { key: "queued", label: "Queued" },
   { key: "new", label: "Below threshold" },
@@ -35,7 +41,8 @@ export default function JobsPage() {
   const [q, setQ] = useState("");
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
-  const [drafting, setDrafting] = useState<number | null>(null);
+  const [dq, setDq] = useState<Record<number, DraftStatus>>({});
+  const [dqActive, setDqActive] = useState(true); // true → poll; first mount checks for leftovers
   const [expanded, setExpanded] = useState<number | null>(null);
   const [dismissing, setDismissing] = useState<number | null>(null);
   const [dismissReason, setDismissReason] = useState("");
@@ -97,13 +104,44 @@ export default function JobsPage() {
     setJobs((js) => js.filter((j) => j.id !== id));
   };
 
-  const draft = async (id: number) => {
-    setDrafting(id);
-    const res = await fetch(`/api/jobs/${id}/draft`, { method: "POST" });
+  const pollQueue = useCallback(async (): Promise<boolean> => {
+    const res = await fetch("/api/draft-queue");
     const data = await res.json();
-    setDrafting(null);
-    if (data.applicationId) router.push(`/applications/${data.applicationId}`);
-    else alert(`Draft failed: ${data.error || "unknown error"}`);
+    const map: Record<number, DraftStatus> = {};
+    for (const it of data.items || []) map[it.jobId] = it;
+    setDq(map);
+    return (data.items || []).some(
+      (it: DraftStatus) => it.status === "pending" || it.status === "drafting"
+    );
+  }, []);
+
+  // poll while anything is queued/drafting; stops itself when the queue drains
+  useEffect(() => {
+    if (!dqActive) return;
+    let cancelled = false;
+    const tick = async () => {
+      const active = await pollQueue();
+      if (!active && !cancelled) setDqActive(false);
+    };
+    tick();
+    const id = setInterval(tick, 2500);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [dqActive, pollQueue]);
+
+  // Enqueue a background draft — no click-waiting: drafts run one at a time server-side
+  // (free-tier Gemini pacing makes parallel drafting pointless) and the card's button
+  // shows per-job progress. "Open draft" appears when done.
+  const draft = async (id: number) => {
+    setDq((m) => ({ ...m, [id]: { status: "pending" } }));
+    await fetch("/api/draft-queue", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jobId: id }),
+    });
+    setDqActive(true);
   };
 
   const addJob = async () => {
@@ -252,9 +290,34 @@ export default function JobsPage() {
                 )}
               </div>
               <div className="flex flex-col gap-2 shrink-0">
-                <button className={btnPrimary} onClick={() => draft(j.id)} disabled={drafting !== null}>
-                  {drafting === j.id ? "Drafting… (~30s)" : "Draft application"}
-                </button>
+                {dq[j.id]?.status === "done" ? (
+                  <button
+                    className={btnPrimary}
+                    onClick={() => router.push(`/applications/${dq[j.id].applicationId}`)}
+                  >
+                    Open draft
+                  </button>
+                ) : (
+                  <button
+                    className={btnPrimary}
+                    onClick={() => draft(j.id)}
+                    disabled={dq[j.id]?.status === "pending" || dq[j.id]?.status === "drafting"}
+                    title={dq[j.id]?.status === "failed" ? dq[j.id].error : undefined}
+                  >
+                    {dq[j.id]?.status === "pending"
+                      ? "Queued…"
+                      : dq[j.id]?.status === "drafting"
+                        ? "Drafting…"
+                        : dq[j.id]?.status === "failed"
+                          ? "Retry draft"
+                          : "Draft application"}
+                  </button>
+                )}
+                {dq[j.id]?.status === "failed" && (
+                  <div className="text-xs text-rose-400 max-w-48">
+                    {(dq[j.id].error || "draft failed").slice(0, 120)}
+                  </div>
+                )}
                 <div className="flex gap-2">
                   <button
                     className={btnSecondary}

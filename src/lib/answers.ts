@@ -199,27 +199,9 @@ export async function draftApplication(jobId: number): Promise<DraftResult> {
     log.info("ai answers filled", { requested: pending.length, filled: aiCount });
   }
 
-  // Cover letter: generated whenever the form has a cover-letter-ish field or as assisted text
-  const wantsCover = fields.some((f) => /cover|additional information|comments|why/i.test(f.label));
-  if (wantsCover || !introspected) {
-    const cover = await generateJSON<{ coverLetter: string }>(
-      `CANDIDATE PROFILE:\n${candidate}\n\nJOB: ${job.title} at ${job.companyName}\nJOB DESCRIPTION:\n${(job.description || "").slice(0, 6000)}\n\nWrite a short cover letter (150-250 words) for this application. Return JSON {"coverLetter": "..."}.`,
-      {
-        model,
-        system: ANSWER_SYSTEM,
-        responseSchema: {
-          type: "object",
-          properties: { coverLetter: { type: "string" } },
-          required: ["coverLetter"],
-        },
-        temperature: 0.5,
-      }
-    );
-    await db
-      .update(tables.applications)
-      .set({ coverLetter: cover.coverLetter })
-      .where(eq(tables.applications.id, app.id));
-  }
+  // No dedicated cover-letter generation: cover-letter-ish form fields are answered in
+  // the batch above like any other field, saving one Gemini call per draft. The copilot
+  // can still write/edit application.coverLetter on request.
 
   // Per-job resume tailoring — best-effort: any failure keeps the default resume
   try {
@@ -241,7 +223,7 @@ export async function draftApplication(jobId: number): Promise<DraftResult> {
     .where(eq(tables.applications.id, app.id));
   await db.update(tables.jobs).set({ feedStatus: "applied" }).where(eq(tables.jobs.id, jobId));
 
-  log.info("done", { applicationId: app.id, aiCount, needsReview, coverLetter: wantsCover || !introspected, ms: elapsed() });
+  log.info("done", { applicationId: app.id, aiCount, needsReview, ms: elapsed() });
   return { applicationId: app.id, aiCount, needsReview };
 }
 
