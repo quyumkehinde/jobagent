@@ -9,6 +9,9 @@ import { createLogger, startTimer } from "./log";
 
 const log = createLogger("draft");
 
+// sources whose applications we can actually POST programmatically (see submit.ts)
+const API_SUBMIT_SOURCES = ["greenhouse", "lever"];
+
 function normalizeQuestion(q: string): string {
   return q.toLowerCase().replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim();
 }
@@ -110,10 +113,12 @@ export async function draftApplication(jobId: number): Promise<DraftResult> {
   }
 
   const { fields, introspected } = await fetchFormForJob(job);
-  log.info("form fetched", { fields: fields.length, introspected, method: introspected ? "api" : "assisted" });
+  // introspected ≠ submittable: Ashby forms are fetched for real but submitted assisted
+  const method = introspected && API_SUBMIT_SOURCES.includes(job.source) ? "api" : "assisted";
+  log.info("form fetched", { fields: fields.length, introspected, method });
   await db
     .update(tables.applications)
-    .set({ formSchema: JSON.stringify({ introspected, fields }), method: introspected ? "api" : "assisted" })
+    .set({ formSchema: JSON.stringify({ introspected, fields }), method })
     .where(eq(tables.applications.id, app.id));
 
   // reset existing answers on re-draft
