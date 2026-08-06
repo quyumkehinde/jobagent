@@ -244,7 +244,8 @@ The pipeline is triggered three ways: worker cron, `POST /api/pipeline` (fire-an
 
 ### 8.2 Form schema (`src/lib/forms.ts`)
 - **Greenhouse**: the real form, per job, via `GET .../jobs/{id}?questions=true` — standard fields, custom questions, compliance/EEO blocks, with types and select options. `introspected: true`.
-- **Lever / Ashby / aggregators**: a universal `standardFields()` set (name, email, phone, LinkedIn/GitHub/portfolio URLs, location, cover-letter textarea) — the fields ~every application asks. `introspected: false` → the application is `assisted`-first.
+- **Ashby**: the real form, per job, via the hosted board's public GraphQL (`ApiJobPosting` → `applicationForm.sections`) — system fields and custom questions with types (Boolean → Yes/No select, ValueSelect options, LongText → textarea); `fieldKey` is the ATS-native `path`. `introspected: true`, but submit stays `assisted` (no programmatic Ashby submit — `method` is only `api` for sources in `API_SUBMIT_SOURCES`). Ashby's voluntary EEO survey is a separate form and intentionally not drafted.
+- **Lever / aggregators**: a universal `standardFields()` set (name, email, phone, LinkedIn/GitHub/portfolio URLs, location, cover-letter textarea) — the fields ~every application asks. `introspected: false` → the application is `assisted`-first.
 - **YC**: `standardFields()` plus any WaaS custom questions captured at scrape time (stored in `raw.customQuestions`), appended as optional textareas so drafting prepares copy-paste answers for the real form.
 
 ### 8.3 Drafting (`src/lib/answers.ts` → `draftApplication(jobId)`)
@@ -329,7 +330,7 @@ Shared primitives live in `src/components/ui.tsx`; save-on-blur is the form idio
 ## 12. Known limitations (honest list)
 
 1. **Programmatic submit is fragile by design of the ATS ecosystem** — captchas win; assisted mode is the dependable path (and the v2 extension's job).
-2. **Lever/Ashby custom questions aren't introspected** — those forms get the standard field set; custom questions surface only on the real form (answer bank + extension close this gap later).
+2. **Lever custom questions aren't introspected** — those forms get the standard field set; custom questions surface only on the real form (answer bank + extension close this gap later). Ashby is introspected for real since 2026-08.
 3. **QA-bank matching is string containment**, not semantic — "Why do you want to work here?" vs "What excites you about this role?" are different entries. (Cheap fix later: embedding similarity.)
 4. **Eligibility classification is LLM judgment** — strict prompt + `unknown`-stays-eligible biases it toward false positives (wasted review seconds) over false negatives (missed jobs), which is the right failure direction.
 5. **No inbox integration yet** — ghosted/rejected/screening transitions are manual until the v1.5 Gmail sync.
