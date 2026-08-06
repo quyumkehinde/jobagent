@@ -287,7 +287,7 @@ The **copilot** on the review page takes plain-language instructions ("add Kafka
 | route | methods | purpose |
 |---|---|---|
 | `/api/pipeline` | GET / POST | last 20 scrape runs + running flag / fire-and-forget full run (409 if running) |
-| `/api/jobs?tab=&q=` | GET / POST | feed query (tabs: `queued`, `new`, `flagged`, `dismissed`, `all`; score desc, nulls last) / **manual add by URL** `{url, title?, companyName?}` — page fetched (rendered if JS), fields extracted, ingested as `source: manual`, straight to queued; scored next run and never demoted by the model |
+| `/api/jobs?tab=&q=` | GET / POST | feed query (tabs: `queued`, `new`, `flagged`, `dismissed`, `all`; score desc — except unscored-but-queued jobs, i.e. fresh manual adds, which pin to the top until scored) / **manual add by URL** `{url, title?, companyName?}` — known-ATS URLs (greenhouse, lever, ashby, recruitee, workable incl. `/j/` short links, smartrecruiters) are detected by `src/connectors/fromUrl.ts` and ingested **natively**: single-posting API fetch, real company name, ATS externalId (dedupes against board scrapes — re-adding an already-tracked job promotes it to queued instead of duplicating), linked to the tracked company when the board is known. Unknown hosts fall back to generic extraction (page fetched, rendered if JS) as `source: manual`. Either way: straight to queued, scored next run, never demoted by the model |
 | `/api/jobs/[id]` | GET / PATCH | job detail / feedStatus change (queue·dismiss·restore) |
 | `/api/jobs/[id]/draft` | POST | run `draftApplication` → `{applicationId, aiCount, needsReview}` |
 | `/api/applications?status=` | GET | list (single status or comma list) joined with jobs |

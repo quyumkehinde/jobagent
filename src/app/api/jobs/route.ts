@@ -3,6 +3,8 @@ import { db, tables } from "@/db";
 import { and, desc, eq, inArray, like, or, sql } from "drizzle-orm";
 import { UA, stripHtml } from "@/connectors/types";
 import { genericExternalId } from "@/connectors/generic";
+import { fetchJobFromUrl } from "@/connectors/fromUrl";
+import { ingestJobs } from "@/lib/ingest";
 import { renderPage, closeBrowser } from "@/lib/browser";
 
 export async function GET(req: NextRequest) {
@@ -24,7 +26,13 @@ export async function GET(req: NextRequest) {
 
   const rows = await db.query.jobs.findMany({
     where: conds.length ? and(...conds) : undefined,
-    orderBy: [desc(sql`coalesce(${tables.jobs.score}, -1)`), desc(tables.jobs.firstSeenAt)],
+    // unscored-but-queued jobs (fresh manual adds) pin to the top instead of sinking
+    // below every scored job — they'd otherwise be invisible until the next scoring run
+    orderBy: [
+      desc(sql`(${tables.jobs.score} is null and ${tables.jobs.feedStatus} = 'queued')`),
+      desc(sql`coalesce(${tables.jobs.score}, -1)`),
+      desc(tables.jobs.firstSeenAt),
+    ],
     limit: 300,
   });
   return NextResponse.json({ jobs: rows });
@@ -62,6 +70,50 @@ export async function POST(req: NextRequest) {
     if (!/^https?:$/.test(url.protocol)) throw new Error("not http(s)");
   } catch {
     return NextResponse.json({ error: "a valid http(s) job URL is required" }, { status: 400 });
+  }
+
+  // Known-ATS URLs ingest natively: right source + ATS externalId (dedupes against
+  // future board scrapes), real company name, and form introspection at draft time.
+  const native = await fetchJobFromUrl(url.toString());
+  if (native) {
+    const dupe = await db.query.jobs.findFirst({
+      where: and(eq(tables.jobs.source, native.source), eq(tables.jobs.externalId, native.externalId)),
+    });
+    if (dupe) {
+      // the user explicitly wants this job — promote it unless it's already in play
+      if (dupe.feedStatus === "new" || dupe.feedStatus === "dismissed") {
+        await db.update(tables.jobs).set({ feedStatus: "queued" }).where(eq(tables.jobs.id, dupe.id));
+        dupe.feedStatus = "queued";
+      }
+      return NextResponse.json({ job: dupe, existed: true });
+    }
+    // link to a tracked company when this board is already known
+    const token = (native.raw as { token?: string } | undefined)?.token;
+    if (token) {
+      const company = await db.query.companies.findFirst({
+        where: and(
+          eq(tables.companies.ats, native.source as NonNullable<typeof tables.companies.$inferSelect.ats>),
+          eq(tables.companies.token, token)
+        ),
+      });
+      if (company) {
+        native.companyId = company.id;
+        native.companyName = company.name;
+      }
+    }
+    const ingested = await ingestJobs([native]);
+    const id = ingested.addedIds[0];
+    await db.update(tables.jobs).set({ feedStatus: "queued" }).where(eq(tables.jobs.id, id));
+    const job = await db.query.jobs.findFirst({ where: eq(tables.jobs.id, id) });
+    return NextResponse.json({
+      job,
+      extracted: {
+        title: native.title,
+        companyName: native.companyName,
+        descriptionChars: native.description?.length ?? 0,
+        native: native.source,
+      },
+    });
   }
 
   const externalId = genericExternalId(url.toString());
