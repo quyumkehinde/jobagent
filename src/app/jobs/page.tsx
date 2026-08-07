@@ -22,6 +22,11 @@ interface Job {
   postedAt: string | null;
 }
 
+const smallBtn =
+  "flex-1 rounded-md px-2 py-1 text-xs font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition-colors";
+const smallBtnDanger =
+  "flex-1 rounded-md px-2 py-1 text-xs font-medium bg-red-900/60 hover:bg-red-800 text-red-100 transition-colors";
+
 interface DraftStatus {
   status: "pending" | "drafting" | "done" | "failed";
   applicationId?: number;
@@ -31,10 +36,22 @@ interface DraftStatus {
 const TABS = [
   { key: "queued", label: "Queued" },
   { key: "new", label: "Below threshold" },
-  { key: "flagged", label: "Flagged (country-restricted)" },
+  { key: "flagged", label: "Flagged", title: "Country-restricted roles" },
   { key: "dismissed", label: "Dismissed" },
   { key: "all", label: "All" },
 ];
+
+// "3d ago" / "5h ago" — compact age for the card meta line
+function ago(dateStr: string | null): string | null {
+  if (!dateStr) return null;
+  const ms = Date.now() - new Date(dateStr).getTime();
+  if (ms < 0 || Number.isNaN(ms)) return null;
+  const h = Math.floor(ms / 3600000);
+  if (h < 1) return "just now";
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return d <= 60 ? `${d}d ago` : null; // ancient dates are noise
+}
 
 export default function JobsPage() {
   const [tab, setTab] = useState("queued");
@@ -197,6 +214,7 @@ export default function JobsPage() {
           <button
             key={t.key}
             onClick={() => setTab(t.key)}
+            title={t.title}
             className={`px-3 py-1.5 rounded-md text-sm ${tab === t.key ? "bg-emerald-600 text-white" : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"}`}
           >
             {t.label}
@@ -267,6 +285,7 @@ export default function JobsPage() {
                   {j.visaSignal === "likely" && <Badge tone="blue">visa: likely</Badge>}
                   {j.roleCategory && <Badge>{j.roleCategory}</Badge>}
                   <Badge>{j.source}</Badge>
+                  {j.feedStatus === "applied" && <Badge tone="green">applied</Badge>}
                 </div>
                 <div className="mt-1.5 font-medium">
                   <a href={j.url} target="_blank" rel="noreferrer" className="hover:text-emerald-400">
@@ -277,6 +296,7 @@ export default function JobsPage() {
                   {j.companyName}
                   {j.location ? ` · ${j.location}` : ""}
                   {j.salary ? ` · ${j.salary}` : ""}
+                  {ago(j.postedAt) && <span className="text-zinc-500"> · posted {ago(j.postedAt)}</span>}
                 </div>
                 {j.feedStatus === "dismissed" && j.dismissReason && (
                   <div className="text-xs text-amber-400/80 mt-1">dismissed: {j.dismissReason}</div>
@@ -289,17 +309,17 @@ export default function JobsPage() {
                   </ul>
                 )}
               </div>
-              <div className="flex flex-col gap-2 shrink-0">
+              <div className="flex flex-col gap-1.5 shrink-0 w-40">
                 {dq[j.id]?.status === "done" ? (
                   <button
-                    className={btnPrimary}
+                    className={`${btnPrimary} justify-center`}
                     onClick={() => router.push(`/applications/${dq[j.id].applicationId}`)}
                   >
                     Open draft
                   </button>
                 ) : (
                   <button
-                    className={btnPrimary}
+                    className={`${btnPrimary} justify-center`}
                     onClick={() => draft(j.id)}
                     disabled={dq[j.id]?.status === "pending" || dq[j.id]?.status === "drafting"}
                     title={dq[j.id]?.status === "failed" ? dq[j.id].error : undefined}
@@ -314,31 +334,42 @@ export default function JobsPage() {
                   </button>
                 )}
                 {dq[j.id]?.status === "failed" && (
-                  <div className="text-xs text-rose-400 max-w-48">
+                  <div className="text-xs text-rose-400">
                     {(dq[j.id].error || "draft failed").slice(0, 120)}
                   </div>
                 )}
-                <div className="flex gap-2">
+                <div className="flex gap-1.5">
                   <button
-                    className={btnSecondary}
+                    className={smallBtn}
                     onClick={() => setExpanded(expanded === j.id ? null : j.id)}
                   >
                     Why?
                   </button>
-                  {j.feedStatus !== "dismissed" ? (
-                    <button
-                      className={btnDanger}
-                      onClick={() => {
-                        setDismissing(dismissing === j.id ? null : j.id);
-                        setDismissReason("");
-                      }}
-                    >
-                      Dismiss
-                    </button>
-                  ) : (
-                    <button className={btnSecondary} onClick={() => setStatus(j.id, "queued")}>
+                  {j.feedStatus === "dismissed" ? (
+                    <button className={smallBtn} onClick={() => setStatus(j.id, "queued")}>
                       Restore
                     </button>
+                  ) : (
+                    <>
+                      {j.feedStatus !== "applied" && (
+                        <button
+                          className={smallBtn}
+                          title="I applied to this outside the app — track it, skip drafting"
+                          onClick={() => setStatus(j.id, "applied")}
+                        >
+                          Applied
+                        </button>
+                      )}
+                      <button
+                        className={smallBtnDanger}
+                        onClick={() => {
+                          setDismissing(dismissing === j.id ? null : j.id);
+                          setDismissReason("");
+                        }}
+                      >
+                        Dismiss
+                      </button>
+                    </>
                   )}
                 </div>
               </div>
