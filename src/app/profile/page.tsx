@@ -57,7 +57,7 @@ export default function ProfilePage() {
     const res = await fetch("/api/resumes", { method: "POST", body: fd });
     const data = await res.json();
     setUploading(false);
-    if (data.parseError) alert(`Uploaded, but parsing failed: ${data.parseError}\nCheck your Gemini key in Settings, then re-upload.`);
+    if (data.parseError) alert(`Uploaded, but parsing failed: ${data.parseError}\nCheck your OpenRouter key in Settings, then re-upload.`);
     load();
   };
 

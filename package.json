@@ -12,7 +12,6 @@
     "seed": "tsx scripts/seed.ts"
   },
   "dependencies": {
-    "@google/genai": "^2.15.0",
     "better-sqlite3": "^13.0.2",
     "date-fns": "^4.4.0",
     "drizzle-orm": "^0.45.2",

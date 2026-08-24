@@ -22,19 +22,19 @@ export async function setSetting(key: string, value: unknown): Promise<void> {
 }
 
 export const DEFAULTS = {
-  scoringModel: "gemini-3.6-flash",
-  writerModel: "gemini-3.6-flash",
+  scoringModel: "stealth/ox-alpha",
+  writerModel: "stealth/ox-alpha",
   queueThreshold: 55, // score >= this -> auto-queued into review feed
   maxQueuedPerCompany: 5, // per company, keep only the N best-scoring jobs queued
   scrapeIntervalHours: 3,
-  maxScoringPerRun: 120, // cap Gemini scoring calls per scrape run (batched 8/call)
+  maxScoringPerRun: 120, // cap LLM scoring calls per scrape run (batched 8/call)
   resolveBatchPerRun: 1000, // imported companies probed per pipeline run
   resolveWebPerRun: 40, // of those, how many may use the web-search fallback
   genericCompaniesPerRun: 10, // unresolved-with-careersUrl companies scraped per run
   genericJobsPerCompany: 15, // job-page fetches per company per run
-  genericGeminiPerRun: 5, // Gemini extraction calls the generic scraper may spend per run
+  genericGeminiPerRun: 5, // LLM extraction calls the generic scraper may spend per run
   headlessPagesPerRun: 30, // headless-Chrome renders the generic scraper may spend per run
   headlessResolvePerRun: 10, // headless renders the resolution web-fallback may spend per run
   closeAfterDays: 14, // board-backed jobs unseen this long are marked closed
-  geminiMinIntervalMs: 6500, // free tier ~9 RPM; drop to ~500 on a paid key
+  llmMinIntervalMs: 3000, // OpenRouter free/preview models are RPM-limited; drop on a paid tier
 };

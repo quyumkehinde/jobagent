@@ -1,9 +1,10 @@
 import { db, tables } from "@/db";
 import { eq } from "drizzle-orm";
-import { generateJSON } from "./gemini";
+import { generateJSON } from "./openrouter";
 import { buildCandidateSummary, getProfileValue } from "./candidate";
 import { getSetting, DEFAULTS } from "./settings";
 import { FormField, fetchFormForJob } from "./forms";
+import { limitWords } from "./text";
 import { tailorResume } from "./tailor";
 import { createLogger, startTimer } from "./log";
 
@@ -95,7 +96,7 @@ export interface DraftResult {
 }
 
 // Creates (or refreshes) an application draft for a job: fetch form, fill deterministic
-// fields, reuse QA bank, generate the rest with Gemini, and write a cover letter.
+// fields, reuse QA bank, generate the rest with the LLM, and write a cover letter.
 export async function draftApplication(jobId: number): Promise<DraftResult> {
   const job = await db.query.jobs.findFirst({ where: eq(tables.jobs.id, jobId) });
   if (!job) throw new Error(`job ${jobId} not found`);
@@ -180,7 +181,7 @@ export async function draftApplication(jobId: number): Promise<DraftResult> {
       )
       .join("\n---\n");
     const results = await generateJSON<{ fieldKey: string; answer: string; confidence: "high" | "medium" | "low" }[]>(
-      `CANDIDATE PROFILE:\n${candidate}\n\nJOB: ${job.title} at ${job.companyName}\nJOB DESCRIPTION:\n${(job.description || "").slice(0, 6000)}\n\nAnswer each application form field below:\n\n${fieldsText}`,
+      `CANDIDATE PROFILE:\n${candidate}\n\nJOB: ${job.title} at ${job.companyName}\nJOB DESCRIPTION:\n${limitWords(job.description || "", 10000)}\n\nAnswer each application form field below:\n\n${fieldsText}`,
       { model, system: ANSWER_SYSTEM, responseSchema: ANSWER_SCHEMA, temperature: 0.4 }
     );
     const rows = await db.query.applicationAnswers.findMany({
@@ -200,7 +201,7 @@ export async function draftApplication(jobId: number): Promise<DraftResult> {
   }
 
   // No dedicated cover-letter generation: cover-letter-ish form fields are answered in
-  // the batch above like any other field, saving one Gemini call per draft. The copilot
+  // the batch above like any other field, saving one LLM call per draft. The copilot
   // can still write/edit application.coverLetter on request.
 
   // Per-job resume tailoring — best-effort: any failure keeps the default resume

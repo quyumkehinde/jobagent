@@ -2,7 +2,7 @@ import { draftApplication } from "./answers";
 import { createLogger } from "./log";
 
 // In-process background draft queue: enqueue N jobs, they draft strictly one at a time
-// (free-tier Gemini calls are globally spaced anyway, so parallel drafting buys nothing)
+// (LLM calls are globally spaced anyway, so parallel drafting buys nothing)
 // while the UI polls per-job status instead of click-waiting. In-memory by design — a
 // dev-server restart or HMR reload drops pending entries, which only means re-clicking.
 

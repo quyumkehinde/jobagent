@@ -1,9 +1,10 @@
 import { db, tables } from "@/db";
 import { eq } from "drizzle-orm";
-import { generateJSON } from "./gemini";
+import { generateJSON } from "./openrouter";
 import { getSetting, DEFAULTS } from "./settings";
 import { getProfileValue } from "./candidate";
 import { compileResumeLatex, LatexCompileError } from "./latex";
+import { limitWords } from "./text";
 import { createLogger, startTimer } from "./log";
 
 const log = createLogger("tailor");
@@ -74,7 +75,7 @@ export async function tailorResume(applicationId: number): Promise<TailorResult>
   const job = await db.query.jobs.findFirst({ where: eq(tables.jobs.id, app.jobId) });
   if (!job) throw new Error(`job ${app.jobId} not found`);
 
-  const jd = (app.jdSnapshot || job.description || "").slice(0, 6000);
+  const jd = limitWords(app.jdSnapshot || job.description || "", 10000);
   const skills = (await getProfileValue<string[]>("skills")) || [];
   const model = await getSetting("writerModel", DEFAULTS.writerModel);
   const elapsed = startTimer();

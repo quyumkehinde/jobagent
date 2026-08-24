@@ -1,9 +1,10 @@
 import { db, tables } from "@/db";
 import { eq, and } from "drizzle-orm";
-import { generateJSON } from "./gemini";
+import { generateJSON } from "./openrouter";
 import { buildCandidateSummary, getProfileValue } from "./candidate";
 import { getSetting, DEFAULTS } from "./settings";
 import { saveTailoredResume } from "./tailor";
+import { limitWords } from "./text";
 import { LatexCompileError } from "./latex";
 import { WRITING_STYLE } from "./answers";
 import { createLogger, startTimer } from "./log";
@@ -80,7 +81,7 @@ export async function runCopilot(
   const context = [
     `CANDIDATE PROFILE:\n${candidate}`,
     `JOB: ${job.title} at ${job.companyName}`,
-    `JOB DESCRIPTION (excerpt):\n${(app.jdSnapshot || job.description || "").slice(0, 4000)}`,
+    `JOB DESCRIPTION:\n${limitWords(app.jdSnapshot || job.description || "", 10000)}`,
     `CURRENT COVER LETTER:\n${app.coverLetter || "(none)"}`,
     `CURRENT RESUME (LaTeX):\n${resumeLatex || "(none — resume edits are not possible, say so if asked)"}`,
     `FORM ANSWERS (fieldKey → label → current answer):\n${answers

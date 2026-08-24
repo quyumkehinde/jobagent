@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { db, tables } from "@/db";
 import { eq } from "drizzle-orm";
-import { generateJSON } from "./gemini";
+import { generateJSON } from "./openrouter";
 import { getSetting, DEFAULTS } from "./settings";
 
 const RESUME_SCHEMA = {

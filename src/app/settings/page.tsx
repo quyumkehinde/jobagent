@@ -4,8 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import { Card, Badge, btnPrimary, btnSecondary, input } from "@/components/ui";
 
 interface Settings {
-  geminiApiKey: string;
-  geminiKeyFromEnv: boolean;
+  openrouterApiKey: string;
+  openrouterKeyFromEnv: boolean;
   scoringModel: string;
   writerModel: string;
   queueThreshold: number;
@@ -13,7 +13,7 @@ interface Settings {
   scrapeIntervalHours: number;
   maxScoringPerRun: number;
   closeAfterDays: number;
-  geminiMinIntervalMs: number;
+  llmMinIntervalMs: number;
 }
 interface Company {
   id: number;
@@ -137,18 +137,18 @@ export default function SettingsPage() {
       </div>
 
       <Card className="space-y-3">
-        <h2 className="font-semibold">Gemini API</h2>
-        {settings.geminiKeyFromEnv ? (
-          <p className="text-sm text-emerald-400">Using GEMINI_API_KEY from environment (.env.local).</p>
+        <h2 className="font-semibold">OpenRouter API</h2>
+        {settings.openrouterKeyFromEnv ? (
+          <p className="text-sm text-emerald-400">Using OPENROUTER_API_KEY from environment (.env.local).</p>
         ) : (
           <label className="block">
             <span className="text-sm text-zinc-400">API key</span>
             <input
               className={`${input} mt-1`}
               type="password"
-              defaultValue={settings.geminiApiKey}
-              placeholder="AIza…"
-              onBlur={(e) => e.target.value && save({ geminiApiKey: e.target.value })}
+              defaultValue={settings.openrouterApiKey}
+              placeholder="sk-or-…"
+              onBlur={(e) => e.target.value && save({ openrouterApiKey: e.target.value })}
             />
           </label>
         )}
@@ -180,10 +180,10 @@ export default function SettingsPage() {
           {numField("Scrape every (hours)", "scrapeIntervalHours")}
           {numField("Max jobs scored per run", "maxScoringPerRun")}
           {numField("Close unseen jobs after (days)", "closeAfterDays")}
-          {numField("Gemini call gap (ms)", "geminiMinIntervalMs", "6500 = free tier · ~500 on paid")}
+          {numField("LLM call gap (ms)", "llmMinIntervalMs", "3000 = free/preview models · lower on paid")}
         </div>
         <p className="text-xs text-zinc-500">
-          Free-tier Gemini has daily request caps — if you hit them, unscored jobs simply wait for the next run.
+          Free/preview OpenRouter models have request caps — if you hit them, unscored jobs simply wait for the next run.
           Scoring prioritizes visa-sponsor companies and newest jobs first.
         </p>
       </Card>

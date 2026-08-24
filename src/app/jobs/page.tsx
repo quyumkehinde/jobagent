@@ -149,7 +149,7 @@ export default function JobsPage() {
   }, [dqActive, pollQueue]);
 
   // Enqueue a background draft — no click-waiting: drafts run one at a time server-side
-  // (free-tier Gemini pacing makes parallel drafting pointless) and the card's button
+  // (global LLM call pacing makes parallel drafting pointless) and the card's button
   // shows per-job progress. "Open draft" appears when done.
   const draft = async (id: number) => {
     setDq((m) => ({ ...m, [id]: { status: "pending" } }));

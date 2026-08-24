@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { draftApplication } from "@/lib/answers";
 
 // Creates the application draft (form fetch + answer generation). Can take ~30s
-// due to Gemini free-tier pacing.
+// due to LLM call pacing.
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {

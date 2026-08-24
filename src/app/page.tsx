@@ -184,7 +184,7 @@ export default function Today() {
               <Link href="/profile" className="text-emerald-400 underline">
                 profile
               </Link>
-              , add your Gemini key in{" "}
+              , add your OpenRouter key in{" "}
               <Link href="/settings" className="text-emerald-400 underline">
                 settings
               </Link>
