@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Card, Badge, btnPrimary, btnSecondary, input } from "@/components/ui";
 
 interface Settings {
+  llmProvider: string;
   openrouterApiKey: string;
   openrouterKeyFromEnv: boolean;
   scoringModel: string;
@@ -137,12 +138,37 @@ export default function SettingsPage() {
       </div>
 
       <Card className="space-y-3">
-        <h2 className="font-semibold">OpenRouter API</h2>
-        {settings.openrouterKeyFromEnv ? (
+        <h2 className="font-semibold">Model provider</h2>
+        <label className="block">
+          <span className="text-sm text-zinc-400">Provider</span>
+          <select
+            className={`${input} mt-1`}
+            value={settings.llmProvider}
+            onChange={(e) => {
+              const provider = e.target.value;
+              // switching provider resets both models to that provider's sane defaults
+              const models =
+                provider === "claude"
+                  ? { scoringModel: "haiku", writerModel: "sonnet" }
+                  : { scoringModel: "stealth/ox-alpha", writerModel: "stealth/ox-alpha" };
+              save({ llmProvider: provider, ...models });
+            }}
+          >
+            <option value="openrouter">OpenRouter (API key)</option>
+            <option value="claude">Claude Code CLI (your Claude subscription)</option>
+          </select>
+        </label>
+        {settings.llmProvider === "claude" ? (
+          <p className="text-sm text-zinc-400">
+            Calls run through the local <code className="text-zinc-300">claude</code> CLI on your logged-in
+            subscription — no API key needed. Heavy scoring runs share your plan&apos;s usage window with your own
+            Claude Code sessions.
+          </p>
+        ) : settings.openrouterKeyFromEnv ? (
           <p className="text-sm text-emerald-400">Using OPENROUTER_API_KEY from environment (.env.local).</p>
         ) : (
           <label className="block">
-            <span className="text-sm text-zinc-400">API key</span>
+            <span className="text-sm text-zinc-400">OpenRouter API key</span>
             <input
               className={`${input} mt-1`}
               type="password"
@@ -156,18 +182,26 @@ export default function SettingsPage() {
           <label className="block">
             <span className="text-sm text-zinc-400">Scoring model (bulk, cheap)</span>
             <input
+              key={settings.llmProvider}
               className={`${input} mt-1`}
               defaultValue={settings.scoringModel}
               onBlur={(e) => save({ scoringModel: e.target.value })}
             />
+            <span className="text-xs text-zinc-600">
+              {settings.llmProvider === "claude" ? "haiku / sonnet / opus" : "e.g. stealth/ox-alpha"}
+            </span>
           </label>
           <label className="block">
             <span className="text-sm text-zinc-400">Writer model (answers, cover letters)</span>
             <input
+              key={settings.llmProvider}
               className={`${input} mt-1`}
               defaultValue={settings.writerModel}
               onBlur={(e) => save({ writerModel: e.target.value })}
             />
+            <span className="text-xs text-zinc-600">
+              {settings.llmProvider === "claude" ? "haiku / sonnet / opus" : "e.g. stealth/ox-alpha"}
+            </span>
           </label>
         </div>
       </Card>

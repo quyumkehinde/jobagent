@@ -1,6 +1,6 @@
 import { db, tables } from "@/db";
 import { eq } from "drizzle-orm";
-import { generateJSON } from "./openrouter";
+import { generateJSON } from "./llm";
 import { getSetting, DEFAULTS } from "./settings";
 import { getProfileValue } from "./candidate";
 import { compileResumeLatex, LatexCompileError } from "./latex";

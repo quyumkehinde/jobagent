@@ -1,6 +1,7 @@
 import { getSetting } from "./settings";
 import { createLogger } from "./log";
 import { reportRateLimit } from "./hostgate";
+import type { GenOptions } from "./llm";
 
 const log = createLogger("openrouter");
 
@@ -12,31 +13,11 @@ async function getKey(): Promise<string> {
   return key;
 }
 
-// Simple spacing between calls to stay inside RPM limits. Settings-driven so a
-// rate-limit change (preview model → paid tier) needs no code change.
-let lastCallAt = 0;
-
-async function throttle() {
-  const minInterval = await getSetting("llmMinIntervalMs", 3000);
-  const wait = lastCallAt + minInterval - Date.now();
-  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-  lastCallAt = Date.now();
-}
-
-export interface GenOptions {
-  model: string;
-  system?: string;
-  responseSchema?: object; // JSON schema the output must match (enforced via prompt + parse retry)
-  temperature?: number;
-  // inline file (e.g. resume PDF)
-  file?: { mimeType: string; data: string }; // base64
-}
-
 type ContentPart =
   | { type: "text"; text: string }
   | { type: "file"; file: { filename: string; file_data: string } };
 
-export async function generate(prompt: string, opts: GenOptions): Promise<string> {
+export async function openrouterGenerate(prompt: string, opts: GenOptions): Promise<string> {
   const key = await getKey();
 
   // Schema goes into the system prompt rather than response_format: some of our schemas
@@ -63,7 +44,6 @@ export async function generate(prompt: string, opts: GenOptions): Promise<string
   };
 
   for (let attempt = 0; attempt < 4; attempt++) {
-    await throttle();
     try {
       const res = await fetch(API_URL, {
         method: "POST",
@@ -87,30 +67,6 @@ export async function generate(prompt: string, opts: GenOptions): Promise<string
       const backoffMs = (attempt + 1) * 15000;
       log.warn("retrying after error", { attempt: attempt + 1, backoffMs, model: opts.model, error: msg.slice(0, 200) });
       await new Promise((r) => setTimeout(r, backoffMs));
-    }
-  }
-  throw new Error("unreachable");
-}
-
-export async function generateJSON<T>(prompt: string, opts: GenOptions): Promise<T> {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const text = await generate(prompt, opts);
-    // models occasionally wrap JSON in fences or lead-in prose despite instructions
-    const cleaned = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
-    try {
-      return JSON.parse(cleaned) as T;
-    } catch {
-      const start = cleaned.search(/[[{]/);
-      const end = Math.max(cleaned.lastIndexOf("}"), cleaned.lastIndexOf("]"));
-      if (start >= 0 && end > start) {
-        try {
-          return JSON.parse(cleaned.slice(start, end + 1)) as T;
-        } catch {
-          /* fall through to retry */
-        }
-      }
-      if (attempt === 1) throw new Error(`model did not return valid JSON: ${cleaned.slice(0, 200)}`);
-      log.warn("invalid JSON, retrying once", { model: opts.model });
     }
   }
   throw new Error("unreachable");

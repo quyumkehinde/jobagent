@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { db, tables } from "@/db";
 import { eq } from "drizzle-orm";
-import { generateJSON } from "./openrouter";
+import { generateJSON } from "./llm";
 import { getSetting, DEFAULTS } from "./settings";
 
 const RESUME_SCHEMA = {
@@ -64,7 +64,7 @@ export async function parseResume(resumeId: number): Promise<object> {
 
   const parsed = await generateJSON<Record<string, unknown>>(
     "Extract this resume into the structured JSON schema. Preserve exact wording of experience highlights (these ground future application answers — do not embellish). Include every role.",
-    { model, responseSchema: RESUME_SCHEMA, file: { mimeType: "application/pdf", data } }
+    { model, responseSchema: RESUME_SCHEMA, file: { mimeType: "application/pdf", data, path: filePath } }
   );
 
   await db.update(tables.resumes).set({ parsed: JSON.stringify(parsed) }).where(eq(tables.resumes.id, resumeId));

@@ -22,6 +22,7 @@ export async function setSetting(key: string, value: unknown): Promise<void> {
 }
 
 export const DEFAULTS = {
+  llmProvider: "openrouter", // "openrouter" | "claude" (headless Claude Code CLI on the user's subscription)
   scoringModel: "stealth/ox-alpha",
   writerModel: "stealth/ox-alpha",
   queueThreshold: 55, // score >= this -> auto-queued into review feed

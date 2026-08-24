@@ -13,7 +13,7 @@ import { resolvePendingCompanies, discoverCareersUrl } from "./resolve";
 import { fetchGenericCareers, JsRequiredError } from "@/connectors/generic";
 import { createRenderBudget, closeBrowser } from "./browser";
 import { reportRateLimit } from "./hostgate";
-import { generateJSON } from "./openrouter";
+import { generateJSON } from "./llm";
 import { getSetting, DEFAULTS } from "./settings";
 import { createLogger, startTimer } from "./log";
 import { acquireLock, releaseLock, heartbeatLock, isLockHeld } from "./lock";

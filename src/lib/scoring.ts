@@ -1,6 +1,6 @@
 import { db, tables } from "@/db";
 import { eq, isNull, isNotNull, and, desc, inArray } from "drizzle-orm";
-import { generateJSON } from "./openrouter";
+import { generateJSON } from "./llm";
 import { buildCandidateSummary } from "./candidate";
 import { getSetting, DEFAULTS } from "./settings";
 import { createLogger, startTimer } from "./log";
@@ -235,7 +235,7 @@ export async function scoreUnscored(limit?: number): Promise<{ scored: number; q
         error: String(err).slice(0, 300),
       });
       // stop the run on quota errors; remaining jobs stay unscored for next run
-      if (/429|RESOURCE_EXHAUSTED/i.test(String(err))) {
+      if (/429|RESOURCE_EXHAUSTED|usage limit|rate.?limit/i.test(String(err))) {
         log.warn("quota exhausted — aborting scoring, remaining jobs wait for next run", {
           remaining: unscored.length - scored,
         });

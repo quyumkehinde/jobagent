@@ -1,6 +1,6 @@
 import { db, tables } from "@/db";
 import { eq } from "drizzle-orm";
-import { generateJSON } from "./openrouter";
+import { generateJSON } from "./llm";
 import { buildCandidateSummary, getProfileValue } from "./candidate";
 import { getSetting, DEFAULTS } from "./settings";
 import { FormField, fetchFormForJob } from "./forms";

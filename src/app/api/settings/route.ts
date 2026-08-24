@@ -3,6 +3,7 @@ import { getSetting, setSetting, DEFAULTS } from "@/lib/settings";
 
 export async function GET() {
   const settings = {
+    llmProvider: await getSetting("llmProvider", DEFAULTS.llmProvider),
     openrouterApiKey: (await getSetting("openrouterApiKey", "")) ? "•••set•••" : "",
     openrouterKeyFromEnv: !!process.env.OPENROUTER_API_KEY,
     scoringModel: await getSetting("scoringModel", DEFAULTS.scoringModel),
@@ -22,6 +23,7 @@ export async function GET() {
 export async function PUT(req: NextRequest) {
   const body = (await req.json()) as Record<string, unknown>;
   const allowed = [
+    "llmProvider",
     "openrouterApiKey",
     "scoringModel",
     "writerModel",
