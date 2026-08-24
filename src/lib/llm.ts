@@ -32,25 +32,29 @@ export async function generate(prompt: string, opts: GenOptions): Promise<string
   return provider === "claude" ? claudeGenerate(prompt, opts) : openrouterGenerate(prompt, opts);
 }
 
-// Models sometimes emit raw newlines/tabs inside JSON string values (e.g. a LaTeX
-// document in a "latex" field) — invalid JSON that a plain retry rarely fixes.
-// Escape literal control characters found inside strings so JSON.parse accepts them.
-function escapeControlCharsInStrings(json: string): string {
+// Models emitting LaTeX (or code) inside JSON string values produce two kinds of
+// invalid JSON that a plain retry rarely fixes: literal control characters (raw
+// newlines/tabs) and invalid escape sequences (\documentclass, \usepackage — where
+// \u even starts a malformed unicode escape). Repair both inside strings only.
+function repairJsonStrings(json: string): string {
   let out = "";
   let inString = false;
-  let escaped = false;
-  for (const ch of json) {
+  for (let i = 0; i < json.length; i++) {
+    const ch = json[i];
     if (!inString) {
       if (ch === '"') inString = true;
       out += ch;
       continue;
     }
-    if (escaped) {
-      out += ch;
-      escaped = false;
-    } else if (ch === "\\") {
-      out += ch;
-      escaped = true;
+    if (ch === "\\") {
+      const next = json[i + 1] ?? "";
+      const validUnicode = next === "u" && /^[0-9a-fA-F]{4}$/.test(json.slice(i + 2, i + 6));
+      if ('"\\/bfnrt'.includes(next) || validUnicode) {
+        out += ch + next;
+        i++;
+      } else {
+        out += "\\\\"; // lone backslash before e.g. "d" in \documentclass — escape it
+      }
     } else if (ch === '"') {
       inString = false;
       out += ch;
@@ -63,7 +67,7 @@ function escapeControlCharsInStrings(json: string): string {
 }
 
 function tryParse<T>(text: string): T | undefined {
-  for (const candidate of [text, escapeControlCharsInStrings(text)]) {
+  for (const candidate of [text, repairJsonStrings(text)]) {
     try {
       return JSON.parse(candidate) as T;
     } catch {
