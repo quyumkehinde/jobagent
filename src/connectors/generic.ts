@@ -5,7 +5,7 @@ import { CONNECTORS } from "./registry";
 import { AtsName } from "./registry";
 
 // Last-resort scraper for companies whose careers page runs on no supported ATS.
-// Heuristics first, one optional Gemini extraction call when they come up dry.
+// Heuristics first, one optional LLM extraction call when they come up dry.
 // Jobs get externalId = hash(url) — if the site moves URLs, the old row is reaped by
 // closing detection and the new URL ingests fresh. Page 1 only; honest cap.
 
@@ -91,8 +91,8 @@ function extractJobLinks(html: string, baseUrl: string): { url: string; text: st
 export interface GenericOpts {
   maxJobs: number;
   knownExternalIds: Set<string>;
-  // returns true if the caller's per-run Gemini extraction budget allows one more call
-  tryGeminiExtract?: (pageText: string, companyName: string) => Promise<{ title: string; url: string; location?: string }[] | null>;
+  // returns true if the caller's per-run LLM extraction budget allows one more call
+  tryLlmExtract?: (pageText: string, companyName: string) => Promise<{ title: string; url: string; location?: string }[] | null>;
   // budgeted headless render (src/lib/browser.ts) — used only when static HTML is empty-ish
   render?: (url: string) => Promise<string | null>;
 }
@@ -217,9 +217,9 @@ export async function fetchGenericCareers(
     candidates = candidates.filter((c) => (seen.has(c.url) ? false : (seen.add(c.url), true)));
   }
 
-  // heuristics came up dry → one Gemini extraction if the run's budget allows
-  if (candidates.length < 3 && opts.tryGeminiExtract) {
-    const extracted = await opts.tryGeminiExtract(text.slice(0, 15000), company.name);
+  // heuristics came up dry → one LLM extraction if the run's budget allows
+  if (candidates.length < 3 && opts.tryLlmExtract) {
+    const extracted = await opts.tryLlmExtract(text.slice(0, 15000), company.name);
     if (extracted) {
       for (const e of extracted) {
         try {

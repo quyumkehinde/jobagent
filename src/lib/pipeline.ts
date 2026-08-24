@@ -123,7 +123,7 @@ export async function scrapeAtsBoards(): Promise<RawJob[]> {
 export async function scrapeGenericCareers(): Promise<RawJob[]> {
   const perRun = await getSetting("genericCompaniesPerRun", DEFAULTS.genericCompaniesPerRun);
   const maxJobs = await getSetting("genericJobsPerCompany", DEFAULTS.genericJobsPerCompany);
-  const geminiCap = await getSetting("genericGeminiPerRun", DEFAULTS.genericGeminiPerRun);
+  const llmCap = await getSetting("genericLlmPerRun", DEFAULTS.genericLlmPerRun);
   const render = createRenderBudget(await getSetting("headlessPagesPerRun", DEFAULTS.headlessPagesPerRun));
 
   const hasLiveJobs = db
@@ -171,10 +171,10 @@ export async function scrapeGenericCareers(): Promise<RawJob[]> {
   });
   const known = new Set(knownRows.map((r) => r.externalId));
 
-  let geminiUsed = 0;
-  const tryGeminiExtract = async (pageText: string, companyName: string) => {
-    if (geminiUsed >= geminiCap) return null;
-    geminiUsed++;
+  let llmUsed = 0;
+  const tryLlmExtract = async (pageText: string, companyName: string) => {
+    if (llmUsed >= llmCap) return null;
+    llmUsed++;
     try {
       const model = await getSetting("scoringModel", DEFAULTS.scoringModel);
       return await generateJSON<{ title: string; url: string; location?: string }[]>(
@@ -203,7 +203,7 @@ export async function scrapeGenericCareers(): Promise<RawJob[]> {
     try {
       const result = await fetchGenericCareers(
         { id: c.id, name: c.name, careersUrl: c.careersUrl },
-        { maxJobs, knownExternalIds: known, tryGeminiExtract, render }
+        { maxJobs, knownExternalIds: known, tryLlmExtract, render }
       );
       if (result.atsHit) {
         // the careers page linked a supported ATS after all — resolve the company properly

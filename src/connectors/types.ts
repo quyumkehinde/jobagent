@@ -46,7 +46,7 @@ export function stripHtml(html: string): string {
     .trim();
 }
 
-// Cheap title prefilter so we only spend Gemini quota on plausibly-relevant roles.
+// Cheap title prefilter so we only spend LLM quota on plausibly-relevant roles.
 const TITLE_RE =
   /(software|backend|back[- ]end|full[- ]?stack|mobile|ios|android|platform|infra(structure)?|devops|dev ?ops|site reliability|sre|systems?|distributed|api|cloud|golang|\bgo\b|node|typescript|python|rust|react native|flutter|engineer|developer|swe|ontwikkelaar|programmeur)/i;
 const TITLE_EXCLUDE =
