@@ -20,6 +20,7 @@ interface Job {
   roleCategory: string | null;
   feedStatus: string;
   postedAt: string | null;
+  firstSeenAt: string;
 }
 
 const smallBtn =
@@ -32,6 +33,13 @@ interface DraftStatus {
   applicationId?: number;
   error?: string;
 }
+
+type Sort = "score" | "recent" | "posted";
+const SORTS: { key: Sort; label: string }[] = [
+  { key: "score", label: "Best match" },
+  { key: "recent", label: "Most recent" },
+  { key: "posted", label: "Recently posted" },
+];
 
 const TABS = [
   { key: "queued", label: "Queued" },
@@ -56,6 +64,7 @@ function ago(dateStr: string | null): string | null {
 export default function JobsPage() {
   const [tab, setTab] = useState("queued");
   const [q, setQ] = useState("");
+  const [sort, setSort] = useState<Sort>("score");
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
   const [dq, setDq] = useState<Record<number, DraftStatus>>({});
@@ -74,12 +83,14 @@ export default function JobsPage() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const res = await fetch(`/api/jobs?tab=${tab}${q ? `&q=${encodeURIComponent(q)}` : ""}`);
+    const res = await fetch(
+      `/api/jobs?tab=${tab}${q ? `&q=${encodeURIComponent(q)}` : ""}${sort !== "score" ? `&sort=${sort}` : ""}`
+    );
     const data = await res.json();
     setJobs(data.jobs || []);
-    setSelected(new Set()); // stale selections must not survive a tab/search change
+    setSelected(new Set()); // stale selections must not survive a tab/search/sort change
     setLoading(false);
-  }, [tab, q]);
+  }, [tab, q, sort]);
 
   const toggleSelect = (id: number) =>
     setSelected((s) => {
@@ -220,12 +231,26 @@ export default function JobsPage() {
             {t.label}
           </button>
         ))}
-        <input
-          className={`${input} !w-64 ml-auto`}
-          placeholder="Search title or company…"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-        />
+        <div className="ml-auto flex items-center gap-2">
+          <select
+            className={`${input} !w-44`}
+            value={sort}
+            onChange={(e) => setSort(e.target.value as Sort)}
+            title="Sort order"
+          >
+            {SORTS.map((s) => (
+              <option key={s.key} value={s.key}>
+                {s.label}
+              </option>
+            ))}
+          </select>
+          <input
+            className={`${input} !w-64`}
+            placeholder="Search title or company…"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+        </div>
       </div>
 
       {!loading && jobs.length > 0 && tab !== "dismissed" && (
@@ -296,7 +321,11 @@ export default function JobsPage() {
                   {j.companyName}
                   {j.location ? ` · ${j.location}` : ""}
                   {j.salary ? ` · ${j.salary}` : ""}
-                  {ago(j.postedAt) && <span className="text-zinc-500"> · posted {ago(j.postedAt)}</span>}
+                  {ago(j.postedAt) ? (
+                    <span className="text-zinc-500"> · posted {ago(j.postedAt)}</span>
+                  ) : (
+                    ago(j.firstSeenAt) && <span className="text-zinc-500"> · found {ago(j.firstSeenAt)}</span>
+                  )}
                 </div>
                 {j.feedStatus === "dismissed" && j.dismissReason && (
                   <div className="text-xs text-amber-400/80 mt-1">dismissed: {j.dismissReason}</div>

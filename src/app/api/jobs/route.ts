@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db, tables } from "@/db";
-import { and, desc, eq, inArray, like, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, like, or, sql } from "drizzle-orm";
 import { UA, stripHtml } from "@/connectors/types";
 import { genericExternalId } from "@/connectors/generic";
 import { fetchJobFromUrl } from "@/connectors/fromUrl";
@@ -11,6 +11,9 @@ export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
   const tab = sp.get("tab") || "queued"; // queued | new | flagged | dismissed | all
   const search = sp.get("q");
+  // score | recent (newest activity, posted-or-found) | posted (employer date, nulls last)
+  const sortParam = sp.get("sort");
+  const sort = sortParam === "recent" || sortParam === "posted" ? sortParam : "score";
 
   const conds = [];
   // closed roles vanish from the actionable tabs (they stay reachable via "all")
@@ -24,15 +27,27 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  const orderBy =
+    sort === "posted"
+      ? // Strictly the employer's own posting date. The ~1.4% of rows from sources that
+        // report none (yc, generic, manual) sink to the bottom instead of masquerading as
+        // brand new — `posted_at is null` sorts 0 before 1, so real dates come first.
+        [asc(sql`${tables.jobs.postedAt} is null`), desc(tables.jobs.postedAt), desc(tables.jobs.id)]
+      : sort === "recent"
+        ? // Newest activity, whichever we know: the employer's date where there is one,
+          // otherwise when we first saw the job. No score pinning — recency means recency.
+          [desc(sql`coalesce(${tables.jobs.postedAt}, ${tables.jobs.firstSeenAt})`), desc(tables.jobs.id)]
+        : // unscored-but-queued jobs (fresh manual adds) pin to the top instead of sinking
+          // below every scored job — they'd otherwise be invisible until the next scoring run
+          [
+            desc(sql`(${tables.jobs.score} is null and ${tables.jobs.feedStatus} = 'queued')`),
+            desc(sql`coalesce(${tables.jobs.score}, -1)`),
+            desc(tables.jobs.firstSeenAt),
+          ];
+
   const rows = await db.query.jobs.findMany({
     where: conds.length ? and(...conds) : undefined,
-    // unscored-but-queued jobs (fresh manual adds) pin to the top instead of sinking
-    // below every scored job — they'd otherwise be invisible until the next scoring run
-    orderBy: [
-      desc(sql`(${tables.jobs.score} is null and ${tables.jobs.feedStatus} = 'queued')`),
-      desc(sql`coalesce(${tables.jobs.score}, -1)`),
-      desc(tables.jobs.firstSeenAt),
-    ],
+    orderBy,
     limit: 300,
   });
   return NextResponse.json({ jobs: rows });
