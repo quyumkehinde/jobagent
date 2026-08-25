@@ -34,6 +34,7 @@ interface Counts {
   all: number;
   pending: number;
   unresolved: number;
+  weak: number;
   resolved: number;
   inactive: number;
 }
@@ -245,6 +246,7 @@ export default function SettingsPage() {
               ["all", `All ${counts?.all ?? ""}`],
               ["resolved", `Resolved ${counts?.resolved ?? ""}`],
               ["pending", `Pending ${counts?.pending ?? ""}`],
+              ["weak", `Unconfirmed ${counts?.weak ?? ""}`],
               ["unresolved", `Unresolved ${counts?.unresolved ?? ""}`],
               ["inactive", `Inactive ${counts?.inactive ?? ""}`],
             ] as const
@@ -384,6 +386,7 @@ function ImportCard({ counts, onImported }: { counts: Counts | null; onImported:
         <p className="text-sm text-zinc-400">
           Resolution: <Badge tone="yellow">{counts.pending} pending</Badge>{" "}
           <Badge tone="green">{counts.resolved} resolved</Badge>{" "}
+          <Badge tone="yellow">{counts.weak} unconfirmed</Badge>{" "}
           <Badge tone="red">{counts.unresolved} unresolved</Badge>
           {counts.pending > 0 && <span className="text-zinc-500"> — refreshing every 15s</span>}
         </p>
@@ -408,6 +411,8 @@ function CompanyRow({
       case "pending":
       case "probing":
         return <Badge tone="yellow">{c.resolveStatus}</Badge>;
+      case "weak":
+        return <Badge tone="yellow">unconfirmed</Badge>;
       case "unresolved":
         return <Badge tone="red">unresolved</Badge>;
       default:

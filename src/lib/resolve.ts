@@ -157,7 +157,7 @@ async function probeOneAts(conn: NonNullable<(typeof CONNECTORS)[AtsName]>, slug
 async function probeAll(
   company: { name: string },
   notes: string[]
-): Promise<{ hit: Hit | null; sawRateLimit: boolean }> {
+): Promise<{ liveHit: Hit | null; emptyHit: Hit | null; sawRateLimit: boolean }> {
   const slugs = slugCandidates(company.name);
   const outcomes = await Promise.all(
     PROBE_ORDER.map(async (ats) => {
@@ -175,7 +175,9 @@ async function probeAll(
     if (!liveHit && o.liveHit) liveHit = o.liveHit; // outcomes are in PROBE_ORDER
     if (!emptyHit && o.emptyHit) emptyHit = o.emptyHit;
   }
-  return { hit: liveHit || emptyHit, sawRateLimit };
+  // NOT collapsed to `liveHit || emptyHit`: a board with jobs is evidence, an empty one
+  // is only a hypothesis, and the caller treats the two very differently.
+  return { liveHit, emptyHit, sawRateLimit };
 }
 
 // ---------- web fallback (keyless) --------------------------------------------------
@@ -368,7 +370,7 @@ export async function discoverCareersUrl(
 // ---------- the engine --------------------------------------------------------------
 
 export interface ResolveOutcome {
-  status: "resolved" | "unresolved" | "deferred";
+  status: "resolved" | "weak" | "unresolved" | "deferred";
   usedWeb: boolean;
 }
 
@@ -380,7 +382,11 @@ export async function resolveCompany(companyId: number, allowWeb = true): Promis
   await db.update(tables.companies).set({ resolveStatus: "probing" }).where(eq(tables.companies.id, c.id));
 
   const probed = await probeAll(c, notes);
-  let hit = probed.hit;
+  // Only a board with jobs on it ends the search. An empty board is a hypothesis —
+  // "ACT Financial Solutions" and a stranger's abandoned workable/act board look
+  // identical from the name alone, and the company's own site is the only thing that
+  // can tell them apart. So an empty hit no longer suppresses the web fallback.
+  let hit = probed.liveHit;
   let web: WebResult = {};
   let usedWeb = false;
   if (!hit) {
@@ -449,6 +455,33 @@ export async function resolveCompany(companyId: number, allowWeb = true): Promis
     return { status: "deferred", usedWeb };
   }
 
+  if (probed.emptyHit) {
+    const e = probed.emptyHit;
+    // (ats, token) is unique — two companies sharing a first word will probe to the same
+    // empty slug, and the first one there keeps it.
+    const owner = await db.query.companies.findFirst({
+      where: and(eq(tables.companies.ats, e.ats), eq(tables.companies.token, e.token)),
+    });
+    if (!owner || owner.id === c.id) {
+      await db
+        .update(tables.companies)
+        .set({
+          ats: e.ats,
+          token: e.token,
+          active: true,
+          errorCount: 0,
+          resolveStatus: "weak",
+          resolveNote: `${e.ats}/${e.token} matches the name but has 0 jobs and the company site never links it — unconfirmed`,
+          website: web.website || c.website,
+          careersUrl: web.careersUrl || c.careersUrl,
+        })
+        .where(eq(tables.companies.id, c.id));
+      log.info("weak board kept", { company: c.name, board: `${e.ats}/${e.token}` });
+      return { status: "weak", usedWeb };
+    }
+    notes.push(`empty board ${e.ats}/${e.token} is already held by company #${owner.id}`);
+  }
+
   await db
     .update(tables.companies)
     .set({
@@ -463,7 +496,7 @@ export async function resolveCompany(companyId: number, allowWeb = true): Promis
 }
 
 // Called at the top of every pipeline run: works through pending imports in batches.
-export async function resolvePendingCompanies(): Promise<{ resolved: number; unresolved: number; remaining: number }> {
+export async function resolvePendingCompanies(): Promise<{ resolved: number; weak: number; unresolved: number; remaining: number }> {
   const batch = await getSetting("resolveBatchPerRun", DEFAULTS.resolveBatchPerRun);
   const webCap = await getSetting("resolveWebPerRun", DEFAULTS.resolveWebPerRun);
   ddgBlockedThisRun = false;
@@ -474,11 +507,12 @@ export async function resolvePendingCompanies(): Promise<{ resolved: number; unr
     orderBy: (t, { asc }) => asc(t.id),
     limit: batch,
   });
-  if (!pending.length) return { resolved: 0, unresolved: 0, remaining: 0 };
+  if (!pending.length) return { resolved: 0, weak: 0, unresolved: 0, remaining: 0 };
 
   const elapsed = startTimer();
   log.info("batch start", { pending: pending.length });
   let resolved = 0;
+  let weak = 0;
   let unresolved = 0;
   let webUsed = 0;
   // several companies in flight at once — per-platform politeness is enforced by
@@ -493,6 +527,7 @@ export async function resolvePendingCompanies(): Promise<{ resolved: number; unr
           const outcome = await resolveCompany(c.id, webUsed < webCap);
           if (outcome.usedWeb) webUsed++;
           if (outcome.status === "resolved") resolved++;
+          else if (outcome.status === "weak") weak++;
           else if (outcome.status === "unresolved") unresolved++;
           // deferred stays pending for a future run
         } catch (err) {
@@ -508,6 +543,6 @@ export async function resolvePendingCompanies(): Promise<{ resolved: number; unr
   const remaining = (
     await db.query.companies.findMany({ where: eq(tables.companies.resolveStatus, "pending"), columns: { id: true } })
   ).length;
-  log.info("batch done", { resolved, unresolved, remaining, ms: elapsed() });
-  return { resolved, unresolved, remaining };
+  log.info("batch done", { resolved, weak, unresolved, remaining, ms: elapsed() });
+  return { resolved, weak, unresolved, remaining };
 }

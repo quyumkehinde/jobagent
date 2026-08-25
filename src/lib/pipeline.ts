@@ -21,6 +21,8 @@ import { acquireLock, releaseLock, heartbeatLock, isLockHeld } from "./lock";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const log = createLogger("pipeline");
 const PIPELINE_LOCK = "pipeline";
+// how long an unconfirmed ("weak") board rests between polls — see scrapeAtsBoards
+const WEAK_REPOLL_MS = 24 * 3600_000;
 
 async function recordRun(source: string, fn: () => Promise<RawJob[]>): Promise<RawJob[]> {
   const [run] = await db.insert(tables.scrapeRuns).values({ source }).returning({ id: tables.scrapeRuns.id });
@@ -71,18 +73,37 @@ export async function scrapeAtsBoards(): Promise<RawJob[]> {
   log.info("ats sweep start", { boards: companies.length });
   const all: RawJob[] = [];
   let failed = 0;
+  let weakSkipped = 0;
   for (const c of companies) {
     const conn = c.ats ? CONNECTORS[c.ats] : undefined;
     if (!conn || !c.token) continue; // unresolved imports have no board yet
+    // A weak board is an unconfirmed name match that currently yields nothing. Worth
+    // watching — a real board reopens after a hiring freeze, a wrong one never fills —
+    // but not worth a request every run, so it rests a day between polls.
+    if (c.resolveStatus === "weak" && c.lastPolledAt && Date.now() - c.lastPolledAt.getTime() < WEAK_REPOLL_MS) {
+      weakSkipped++;
+      continue;
+    }
     try {
       const jobs = await conn.fetchJobs(c.token, c.name, c.id, {
         knownExternalIds: knownIds.get(c.ats!),
       });
       all.push(...jobs);
+      const confirmsWeak = c.resolveStatus === "weak" && jobs.length > 0;
       await db
         .update(tables.companies)
-        .set({ lastPolledAt: new Date(), errorCount: 0, lastError: null })
+        .set({
+          lastPolledAt: new Date(),
+          errorCount: 0,
+          lastError: null,
+          // a guess that finally produced jobs has earned the promotion
+          ...(confirmsWeak
+            ? { resolveStatus: "resolved" as const, resolveNote: `confirmed by ${jobs.length} live job(s) on the board` }
+            : {}),
+        })
         .where(eq(tables.companies.id, c.id));
+      if (confirmsWeak)
+        log.info("weak board confirmed", { company: c.name, board: `${c.ats}/${c.token}`, jobs: jobs.length });
     } catch (err) {
       failed++;
       const msg = String(err);
@@ -110,7 +131,7 @@ export async function scrapeAtsBoards(): Promise<RawJob[]> {
     }
     await sleep(150);
   }
-  log.info("ats sweep done", { boards: companies.length, failed, found: all.length, ms: elapsed() });
+  log.info("ats sweep done", { boards: companies.length, weakSkipped, failed, found: all.length, ms: elapsed() });
   return all;
 }
 

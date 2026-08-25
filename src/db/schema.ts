@@ -28,8 +28,10 @@ export const companies = sqliteTable(
     website: text("website"),
     careersUrl: text("careers_url"),
     country: text("country"),
-    // bulk-import resolution lifecycle; null = pre-existing row (treated as resolved)
-    resolveStatus: text("resolve_status", { enum: ["pending", "probing", "resolved", "unresolved"] }),
+    // bulk-import resolution lifecycle; null = pre-existing row (treated as resolved).
+    // "weak" = a name-validated board that reported ZERO jobs and got no corroboration
+    // from the company's own site — kept and polled daily, but never trusted as final.
+    resolveStatus: text("resolve_status", { enum: ["pending", "probing", "resolved", "weak", "unresolved"] }),
     resolveNote: text("resolve_note"),
     // null = unknown; set from scoring signals, bulk import, or manually
     visaSponsor: integer("visa_sponsor", { mode: "boolean" }),

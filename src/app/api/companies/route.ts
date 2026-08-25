@@ -3,7 +3,7 @@ import { db, tables } from "@/db";
 import { and, asc, count, eq, isNotNull, isNull, like, or, SQL } from "drizzle-orm";
 import { CONNECTORS, AtsName } from "@/connectors/registry";
 
-// GET /api/companies?status=all|resolved|pending|unresolved|inactive&q=&limit=&offset=
+// GET /api/companies?status=all|resolved|pending|weak|unresolved|inactive&q=&limit=&offset=
 // Server-side filtering/paging — the company table must survive a 6k-row import.
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
@@ -18,6 +18,7 @@ export async function GET(req: NextRequest) {
   else if (status === "pending")
     conds.push(or(eq(tables.companies.resolveStatus, "pending"), eq(tables.companies.resolveStatus, "probing")));
   else if (status === "unresolved") conds.push(eq(tables.companies.resolveStatus, "unresolved"));
+  else if (status === "weak") conds.push(eq(tables.companies.resolveStatus, "weak"));
   else if (status === "inactive") conds.push(eq(tables.companies.active, false));
   if (q) conds.push(or(like(tables.companies.name, `%${q}%`), like(tables.companies.token, `%${q}%`)));
   const where = conds.length ? and(...conds) : undefined;
@@ -33,6 +34,8 @@ export async function GET(req: NextRequest) {
     all: await countBy(undefined),
     pending: await countBy(or(eq(tables.companies.resolveStatus, "pending"), eq(tables.companies.resolveStatus, "probing"))),
     unresolved: await countBy(eq(tables.companies.resolveStatus, "unresolved")),
+    // unconfirmed board guesses — deliberately NOT folded into `resolved`
+    weak: await countBy(eq(tables.companies.resolveStatus, "weak")),
     resolved: await countBy(
       or(eq(tables.companies.resolveStatus, "resolved"), and(isNull(tables.companies.resolveStatus), isNotNull(tables.companies.ats)))
     ),
