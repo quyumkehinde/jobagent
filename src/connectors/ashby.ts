@@ -8,6 +8,8 @@ interface AshbyJob {
   jobUrl: string;
   applyUrl?: string;
   isRemote?: boolean;
+  // "Remote" | "Hybrid" | "OnSite" — the only field that tells the three apart
+  workplaceType?: string;
   publishedAt?: string;
   descriptionHtml?: string;
   compensation?: { compensationTierSummary?: string };
@@ -21,6 +23,15 @@ export async function fetchAshby(token: string, companyName: string, companyId: 
     .filter((j) => titleLooksRelevant(j.title))
     .map((j) => {
       const locs = [j.location, ...(j.secondaryLocations?.map((s) => s.location) || [])].filter(Boolean);
+      // Ashby sets isRemote=true for hybrid roles as well as fully-remote ones, so it
+      // cannot distinguish them — on Ramp's board alone that mislabels 107 hybrid jobs
+      // as Remote. workplaceType is authoritative; isRemote is only a fallback for
+      // boards that don't report one.
+      const mode = j.workplaceType
+        ? j.workplaceType.replace(/^onsite$/i, "Onsite") // Ashby spells it "OnSite"
+        : j.isRemote
+          ? "Remote"
+          : null;
       return {
         source: "ashby",
         externalId: j.id,
@@ -29,7 +40,7 @@ export async function fetchAshby(token: string, companyName: string, companyId: 
         title: j.title,
         companyName,
         companyId,
-        location: [j.isRemote ? "Remote" : null, ...locs].filter(Boolean).join(" · "),
+        location: [mode, ...locs].filter(Boolean).join(" · "),
         salary: j.compensation?.compensationTierSummary,
         description: j.descriptionHtml ? stripHtml(j.descriptionHtml) : undefined,
         postedAt: j.publishedAt ? new Date(j.publishedAt) : undefined,
