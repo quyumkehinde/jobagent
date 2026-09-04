@@ -4,6 +4,17 @@ import { eq } from "drizzle-orm";
 import fs from "node:fs";
 import path from "node:path";
 import { TAILORED_DIR } from "@/lib/latex";
+import { getProfileValue } from "@/lib/candidate";
+
+// What the file is called wherever it lands: the browser tab, the download, and the
+// attachment the extension uploads. Recruiters see this name, so it reads like a person
+// wrote it rather than like our storage key (app-12.pdf / 1785878398796-....pdf).
+async function attachmentName(): Promise<string> {
+  const fullName = ((await getProfileValue<string>("fullName")) || "").trim();
+  const base = fullName ? `${fullName} - Resume` : "Resume";
+  // strip anything that would break the Content-Disposition header or a filesystem
+  return `${base.replace(/[\\/:*?"<>|\r\n]/g, " ").replace(/\s+/g, " ").trim()}.pdf`;
+}
 
 // GET → the resume PDF this application would attach: tailored if present, else default
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -34,10 +45,11 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   }
   if (!pdfPath || !fileName) return NextResponse.json({ error: "no resume on file" }, { status: 404 });
 
+  const downloadName = await attachmentName();
   return new NextResponse(new Uint8Array(fs.readFileSync(pdfPath)), {
     headers: {
       "Content-Type": "application/pdf",
-      "Content-Disposition": `inline; filename="${fileName}"`,
+      "Content-Disposition": `inline; filename="${downloadName}"; filename*=UTF-8''${encodeURIComponent(downloadName)}`,
     },
   });
 }
