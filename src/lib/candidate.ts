@@ -22,7 +22,8 @@ export async function buildCandidateSummary(): Promise<string> {
   if (p.location) lines.push(`Current location: ${p.location}`);
   lines.push(
     `Target roles: Software Engineer — backend, infrastructure/platform, full-stack, mobile.`,
-    `Location preferences: (a) Remote roles hiring worldwide or in regions that include the candidate; (b) On-site/hybrid in London or anywhere in Europe ONLY IF the company sponsors work visas. Remote roles restricted to hiring within one specific country the candidate is not in are NOT eligible (flag as country-restricted).`
+    `Based in: Lagos, Nigeria (UTC+1).`,
+    `Location preferences: (a) Fully remote roles (no office attendance, ever) that can hire someone living in Nigeria — worldwide, Africa/Nigeria, EMEA that doesn't exclude Africa, or a timezone band including UTC+1; mid-level or below. (b) Early-career roles (new grad / junior / 0-2 years) — either remote as in (a), or onsite/hybrid in the UK or Europe ONLY IF the company sponsors work visas. Remote roles restricted to a country or region that excludes Nigeria ("US only", "Remote UK", "Remote EU") are NOT eligible.`
   );
   if (p.workAuthorization) lines.push(`Work authorization: ${JSON.stringify(p.workAuthorization)}`);
   if (p.salaryExpectation) lines.push(`Salary expectation: ${JSON.stringify(p.salaryExpectation)}`);

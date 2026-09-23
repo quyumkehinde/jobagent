@@ -1,4 +1,5 @@
 import { RawJob, UA, titleLooksRelevant } from "./types";
+import { EARLY_CAREER_TITLE_RE } from "@/lib/targeting";
 import { createLogger } from "@/lib/log";
 
 const log = createLogger("yc");
@@ -14,6 +15,7 @@ interface YcPosting {
   equityRange?: string;
   minExperience?: string;
   visa?: string;
+  role?: string; // "eng" for engineering — only set on company-page postings
   companyName?: string;
   companyBatchName?: string;
   companyOneLiner?: string;
@@ -28,7 +30,7 @@ interface YcDataPage {
   props?: {
     jobPostings?: YcPosting[];
     job?: YcJobDetail;
-    company?: { slug?: string };
+    company?: { slug?: string; name?: string; one_liner?: string };
     customQuestions?: unknown[];
   };
 }
@@ -36,6 +38,13 @@ interface YcDataPage {
 const BASE = "https://www.ycombinator.com";
 // Listing slices to sweep; postings are deduped by id across slices.
 const SLICES = ["/jobs/role/software-engineer", "/jobs/role/software-engineer/remote"];
+// The listing pages have no industry or experience filter, so fintech coverage comes from
+// the company directory (Algolia-backed, public search key embedded in the page) and each
+// hiring fintech company's own jobs page.
+const FINTECH_INDUSTRY = "Fintech";
+
+// "Any (new grads ok)", "0-1 years", "1+ years", "2+ years" — early-career on YC's own scale
+const EARLY_EXPERIENCE_RE = /new grads|^any\b|^[0-2]\s*(\+|-|–)/i;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -61,6 +70,41 @@ async function fetchDataPage(url: string): Promise<YcDataPage> {
   } catch {
     throw new Error(`unparseable data-page JSON at ${url}`);
   }
+}
+
+interface AlgoliaHit {
+  slug: string;
+  name: string;
+  one_liner?: string;
+}
+
+// Hiring YC companies tagged Fintech in the directory. The search key is read from the
+// directory page each run (it is a public, index-restricted key that YC may rotate).
+async function fetchFintechCompanies(): Promise<AlgoliaHit[]> {
+  const res = await fetch(`${BASE}/companies`, { headers: { "User-Agent": UA, Accept: "text/html" } });
+  if (!res.ok) throw new Error(`${res.status} for ${BASE}/companies`);
+  const m = (await res.text()).match(/AlgoliaOpts\s*=\s*(\{[^}]+\})/);
+  if (!m) throw new Error("no AlgoliaOpts on the YC company directory (page markup may have changed)");
+  const { app, key } = JSON.parse(m[1]) as { app: string; key: string };
+  const hits: AlgoliaHit[] = [];
+  for (let page = 0; page < 10; page++) {
+    const r = await fetch(`https://${app.toLowerCase()}-dsn.algolia.net/1/indexes/YCCompany_production/query`, {
+      method: "POST",
+      headers: { "x-algolia-application-id": app, "x-algolia-api-key": key, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: "",
+        hitsPerPage: 100,
+        page,
+        facetFilters: [[`industries:${FINTECH_INDUSTRY}`], ["isHiring:true"]],
+        attributesToRetrieve: ["slug", "name", "one_liner"],
+      }),
+    });
+    if (!r.ok) throw new Error(`algolia ${r.status}`);
+    const data = (await r.json()) as { hits: AlgoliaHit[]; nbPages: number };
+    hits.push(...data.hits.filter((h) => h.slug));
+    if (page + 1 >= data.nbPages) break;
+  }
+  return hits;
 }
 
 function toRawJob(p: YcPosting): RawJob {
@@ -101,7 +145,7 @@ function buildDescription(job: YcJobDetail): string {
 // Applying requires a WaaS login, so these applications are always assisted-mode.
 export async function fetchYcJobs(
   knownExternalIds: Set<string> = new Set(),
-  maxDetailFetches = 40
+  maxDetailFetches = 60
 ): Promise<RawJob[]> {
   const postings = new Map<number, YcPosting>();
   const sliceErrors: string[] = [];
@@ -116,14 +160,46 @@ export async function fetchYcJobs(
       sliceErrors.push(String(err));
     }
   }
+  // fintech companies' own job pages (engineering roles only), tagged for the scorer
+  const fintechIds = new Set<number>();
+  try {
+    const companies = await fetchFintechCompanies();
+    for (const c of companies) {
+      try {
+        const page = await fetchDataPage(`${BASE}/companies/${encodeURIComponent(c.slug)}/jobs`);
+        for (const p of page.props?.jobPostings ?? []) {
+          if (!p?.id || !p.title || !p.url || (p.role && p.role !== "eng")) continue;
+          postings.set(p.id, {
+            ...p,
+            companyName: p.companyName || c.name,
+            companyOneLiner: p.companyOneLiner || c.one_liner,
+          });
+          fintechIds.add(p.id);
+        }
+      } catch (err) {
+        log.warn("fintech company page failed", { company: c.slug, error: String(err).slice(0, 200) });
+      }
+      await sleep(150);
+    }
+    log.info("fintech companies swept", { companies: companies.length, postings: fintechIds.size });
+  } catch (err) {
+    log.warn("fintech company directory failed", { error: String(err).slice(0, 200) });
+  }
   if (!postings.size && sliceErrors.length) throw new Error(sliceErrors[0]);
+
+  // Detail fetches are capped per run, so spend them on the targets first: early-career
+  // postings (new grads ok / ≤2 yrs / early-career title), then fintech, then the rest.
+  const priority = (p: YcPosting) =>
+    (EARLY_EXPERIENCE_RE.test(p.minExperience ?? "") || EARLY_CAREER_TITLE_RE.test(p.title) ? 0 : 2) +
+    (fintechIds.has(p.id) ? 0 : 1);
+  const ordered = [...postings.values()].sort((a, b) => priority(a) - priority(b));
 
   const jobs: RawJob[] = [];
   let detailFetches = 0;
   let detailFailures = 0;
   let overCap = 0;
   let known = 0;
-  for (const p of postings.values()) {
+  for (const p of ordered) {
     if (!titleLooksRelevant(p.title.trim())) continue;
     if (knownExternalIds.has(String(p.id))) {
       // Already ingested — listing-only is enough for ingest to bump lastSeenAt/reopen.
@@ -147,6 +223,9 @@ export async function fetchYcJobs(
           raw: {
             companySlug: page.props?.company?.slug,
             visa: job.visa,
+            minExperience: job.minExperience ?? p.minExperience,
+            companyOneLiner: job.companyOneLiner ?? p.companyOneLiner,
+            ...(fintechIds.has(p.id) ? { sector: "fintech" } : {}),
             batch: job.companyBatchName,
             ...(Array.isArray(customQuestions) && customQuestions.length
               ? { customQuestions }

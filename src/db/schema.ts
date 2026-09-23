@@ -28,6 +28,8 @@ export const companies = sqliteTable(
     website: text("website"),
     careersUrl: text("careers_url"),
     country: text("country"),
+    // coarse industry tag, e.g. "fintech" — shown to the scorer as domain context
+    sector: text("sector"),
     // bulk-import resolution lifecycle; null = pre-existing row (treated as resolved).
     // "weak" = a name-validated board that reported ZERO jobs and got no corroboration
     // from the company's own site — kept and polled daily, but never trusted as final.
@@ -67,7 +69,9 @@ export const jobs = sqliteTable(
     closed: integer("closed", { mode: "boolean" }).notNull().default(false),
 
     // AI scoring
-    score: real("score"), // 0-100 fit score
+    score: real("score"), // 0-100 fit score = baseScore + domain boost (capped at 100)
+    baseScore: real("base_score"), // the model's raw score, before the code-applied domain boost
+    // legacy 6-value taxonomy from before the two-category targeting; null once rescored
     eligibility: text("eligibility", {
       enum: [
         "remote-worldwide",
@@ -81,6 +85,32 @@ export const jobs = sqliteTable(
     visaSignal: text("visa_signal", { enum: ["yes", "likely", "no", "unknown"] }),
     scoreReasons: text("score_reasons"), // JSON string[]
     roleCategory: text("role_category"), // backend | infra | fullstack | mobile | other
+    // two-category targeting (null = scored before it existed, or unscored) — see lib/targeting.ts
+    workMode: text("work_mode", { enum: ["fully-remote", "hybrid", "onsite", "unknown"] }),
+    remoteEligibility: text("remote_eligibility", {
+      enum: [
+        "worldwide",
+        "includes-nigeria",
+        "africa",
+        "emea-incl-africa",
+        "timezone-compatible",
+        "country-restricted",
+        "region-excludes-nigeria",
+        "unknown",
+      ],
+    }),
+    // where an onsite/hybrid role's office is — category B's sponsored route requires UK/Europe
+    officeRegion: text("office_region", { enum: ["uk-europe", "other", "unknown"] }),
+    isFintech: integer("is_fintech", { mode: "boolean" }),
+    fintechSubdomain: text("fintech_subdomain"),
+    minYearsExperience: integer("min_years_experience"), // null = not stated
+    seniority: text("seniority", { enum: ["new-grad", "junior", "mid", "senior", "staff-plus", "unknown"] }),
+    domain: text("domain", { enum: ["fintech", "infra-devtools-data", "ai-tooling", "general-backend", "other"] }),
+    // decided in code from the fields above, never by the model
+    targetCategory: text("target_category", { enum: ["remote", "early-career", "both", "none"] }),
+    needsCheck: integer("needs_check", { mode: "boolean" }), // ambiguous location/work mode that could qualify
+    locationQuote: text("location_quote"), // the posting's location line, quoted verbatim by the scorer
+    experienceQuote: text("experience_quote"), // the posting's experience line, quoted verbatim
     scoredAt: integer("scored_at", { mode: "timestamp" }),
 
     // feed lifecycle
@@ -215,6 +245,7 @@ export const scrapeRuns = sqliteTable("scrape_runs", {
   found: integer("found").notNull().default(0),
   added: integer("added").notNull().default(0),
   error: text("error"),
+  stats: text("stats"), // JSON; source "scoring" rows hold per-category counts for that run
 });
 
 // ---------- Settings ----------

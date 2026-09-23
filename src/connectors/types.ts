@@ -1,3 +1,5 @@
+import { EARLY_CAREER_TITLE_RE } from "@/lib/targeting";
+
 export interface RawJob {
   source: string;
   externalId: string;
@@ -52,6 +54,11 @@ const TITLE_RE =
 const TITLE_EXCLUDE =
   /(recruiter|sales|marketing|designer|product manager|program manager|engineering manager|account (exec|manager)|customer success|support engineer|solutions? (engineer|architect)|data scientist|analyst|qa\b|test engineer|intern\b|internship|electrical|mechanical|civil|hardware|verkoop|klantenservice|magazijn|monteur|stagiair)/i;
 
+// Early-career programmes are often titled without a role word ("Graduate Programme 2027 –
+// Technology"), so an early-career keyword plus a tech word is enough to get scored.
+const TECH_RE = /\b(tech(nology)?|engineering|software|developer|backend|platform)\b/i;
+
 export function titleLooksRelevant(title: string): boolean {
-  return TITLE_RE.test(title) && !TITLE_EXCLUDE.test(title);
+  if (TITLE_EXCLUDE.test(title)) return false;
+  return TITLE_RE.test(title) || (EARLY_CAREER_TITLE_RE.test(title) && TECH_RE.test(title));
 }

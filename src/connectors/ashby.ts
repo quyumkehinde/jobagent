@@ -44,7 +44,14 @@ export async function fetchAshby(token: string, companyName: string, companyId: 
         salary: j.compensation?.compensationTierSummary,
         description: j.descriptionHtml ? stripHtml(j.descriptionHtml) : undefined,
         postedAt: j.publishedAt ? new Date(j.publishedAt) : undefined,
-        raw: { id: j.id, token },
+        // structured fields the scorer reads verbatim (see scoring.structuredFields)
+        raw: {
+          id: j.id,
+          token,
+          workplaceType: j.workplaceType,
+          isRemote: j.isRemote,
+          secondaryLocations: j.secondaryLocations?.map((l) => l.location).filter(Boolean),
+        },
       };
     });
 }
