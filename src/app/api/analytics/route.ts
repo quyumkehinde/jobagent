@@ -27,9 +27,19 @@ export async function GET() {
     SELECT 'total_jobs' as k, COUNT(*) as v FROM jobs
     UNION ALL SELECT 'scored', COUNT(*) FROM jobs WHERE scored_at IS NOT NULL
     UNION ALL SELECT 'queued', COUNT(*) FROM jobs WHERE feed_status = 'queued'
-    UNION ALL SELECT 'flagged_country_restricted', COUNT(*) FROM jobs WHERE eligibility = 'country-restricted'
+    UNION ALL SELECT 'flagged_country_restricted', COUNT(*) FROM jobs
+      WHERE (remote_eligibility IN ('country-restricted','region-excludes-nigeria') AND work_mode IN ('fully-remote','unknown'))
+         OR (work_mode IS NULL AND eligibility = 'country-restricted')
     UNION ALL SELECT 'active_companies', COUNT(*) FROM companies WHERE active = 1
   `);
 
-  return NextResponse.json({ stageCounts, bySource, perWeek, jobStats });
+  // per scoring run: how many jobs landed in each target category (stats written by scoreUnscored)
+  const runs = await db.all<{ id: number; startedAt: number; stats: string }>(sql`
+    SELECT id, started_at as startedAt, stats FROM scrape_runs
+    WHERE source = 'scoring' AND stats IS NOT NULL
+    ORDER BY id DESC LIMIT 20
+  `);
+  const categoryRuns = runs.map((r) => ({ id: r.id, startedAt: r.startedAt, ...JSON.parse(r.stats) }));
+
+  return NextResponse.json({ stageCounts, bySource, perWeek, jobStats, categoryRuns });
 }

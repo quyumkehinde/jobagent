@@ -10,6 +10,7 @@
     "worker": "tsx --env-file-if-exists=.env.local src/worker/index.ts",
     "db:push": "drizzle-kit push",
     "seed": "tsx scripts/seed.ts",
+    "seed:fintech": "tsx scripts/seed-fintech.ts",
     "test": "tsx --test 'src/**/*.test.ts'"
   },
   "dependencies": {

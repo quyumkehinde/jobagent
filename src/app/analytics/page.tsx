@@ -8,6 +8,18 @@ interface Analytics {
   bySource: { source: string; submitted: number; responded: number }[];
   perWeek: { week: string; count: number }[];
   jobStats: { k: string; v: number }[];
+  categoryRuns: {
+    id: number;
+    startedAt: number;
+    scored: number;
+    queued: number;
+    remote: number;
+    earlyCareer: number;
+    both: number;
+    needsCheck: number;
+    flagged: number;
+    fintech: number;
+  }[];
 }
 
 export default function AnalyticsPage() {
@@ -110,13 +122,52 @@ export default function AnalyticsPage() {
         </Card>
         <Card>
           <div className="text-2xl font-bold">{stat("flagged_country_restricted")}</div>
-          <div className="text-sm text-zinc-400">flagged country-restricted</div>
+          <div className="text-sm text-zinc-400">flagged (not hireable from Nigeria)</div>
         </Card>
         <Card>
           <div className="text-2xl font-bold">{stat("active_companies")}</div>
           <div className="text-sm text-zinc-400">company boards polled</div>
         </Card>
       </div>
+
+      <Card>
+        <h2 className="font-semibold mb-3">Target categories per scoring run</h2>
+        <table className="w-full text-sm">
+          <thead className="text-zinc-400 text-left">
+            <tr>
+              <th className="py-1">Run</th>
+              <th>Scored</th>
+              <th title="Category A only">A · remote</th>
+              <th title="Category B only">B · early career</th>
+              <th>A+B</th>
+              <th>Needs check</th>
+              <th>Flagged</th>
+              <th>Fintech</th>
+              <th>Queued</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.categoryRuns.map((r) => (
+              <tr key={r.id} className="border-t border-zinc-800">
+                <td className="py-1.5 text-zinc-400">{new Date(r.startedAt * 1000).toLocaleString()}</td>
+                <td>{r.scored}</td>
+                <td>{r.remote}</td>
+                <td>{r.earlyCareer}</td>
+                <td>{r.both}</td>
+                <td>{r.needsCheck}</td>
+                <td>{r.flagged}</td>
+                <td>{r.fintech}</td>
+                <td>{r.queued}</td>
+              </tr>
+            ))}
+            {data.categoryRuns.length === 0 && (
+              <tr>
+                <td className="py-2 text-zinc-500">No scoring runs since targeting was enabled.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
 
       <div className="grid grid-cols-1 gap-4">
         <Card>

@@ -11,6 +11,10 @@ interface Settings {
   writerModel: string;
   queueThreshold: number;
   maxQueuedPerCompany: number;
+  maxYearsRemote: number;
+  enableCategoryA: boolean;
+  enableCategoryB: boolean;
+  domainBoosts: Record<string, number>;
   scrapeIntervalHours: number;
   maxScoringPerRun: number;
   closeAfterDays: number;
@@ -223,6 +227,51 @@ export default function SettingsPage() {
         </p>
       </Card>
 
+      <Card className="space-y-3">
+        <h2 className="font-semibold">Target categories</h2>
+        <div className="flex gap-6 flex-wrap">
+          <label className="flex items-center gap-1.5 text-sm text-zinc-300">
+            <input
+              type="checkbox"
+              checked={settings.enableCategoryA}
+              onChange={(e) => save({ enableCategoryA: e.target.checked })}
+            />
+            A · fully remote, hireable from Nigeria, mid-level or below
+          </label>
+          <label className="flex items-center gap-1.5 text-sm text-zinc-300">
+            <input
+              type="checkbox"
+              checked={settings.enableCategoryB}
+              onChange={(e) => save({ enableCategoryB: e.target.checked })}
+            />
+            B · early career (remote, or UK/Europe onsite/hybrid with sponsorship)
+          </label>
+        </div>
+        <div className="grid grid-cols-3 gap-3">
+          {numField("Category A: max years required", "maxYearsRemote", "unstated years don't disqualify")}
+        </div>
+        <div>
+          <span className="text-sm text-zinc-400">Domain boost (points added to the model&apos;s score)</span>
+          <div className="grid grid-cols-5 gap-3 mt-1">
+            {Object.entries(settings.domainBoosts).map(([domain, pts]) => (
+              <label key={domain} className="block">
+                <span className="text-xs text-zinc-500">{domain}</span>
+                <input
+                  type="number"
+                  className={`${input} mt-1`}
+                  defaultValue={pts}
+                  onBlur={(e) => save({ domainBoosts: { ...settings.domainBoosts, [domain]: Number(e.target.value) } })}
+                />
+              </label>
+            ))}
+          </div>
+        </div>
+        <p className="text-xs text-zinc-500">
+          The model only classifies; these rules decide what queues. Changes apply to already-scored jobs immediately —
+          no rescoring needed.
+        </p>
+      </Card>
+
       <ImportCard counts={counts} onImported={loadCompanies} />
 
       <Card>
@@ -330,6 +379,7 @@ function ImportCard({ counts, onImported }: { counts: Counts | null; onImported:
   const [text, setText] = useState("");
   const [visaSponsor, setVisaSponsor] = useState(true);
   const [country, setCountry] = useState("NL");
+  const [sector, setSector] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<string | null>(null);
 
@@ -339,7 +389,10 @@ function ImportCard({ counts, onImported }: { counts: Counts | null; onImported:
     const res = await fetch("/api/companies/import", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, defaults: { visaSponsor, country: country || undefined } }),
+      body: JSON.stringify({
+        text,
+        defaults: { visaSponsor, country: country || undefined, sector: sector || undefined },
+      }),
     });
     const data = await res.json();
     setBusy(false);
@@ -376,6 +429,15 @@ function ImportCard({ counts, onImported }: { counts: Counts | null; onImported:
         <label className="flex items-center gap-1.5 text-sm text-zinc-300">
           Country
           <input className={`${input} !w-16`} value={country} onChange={(e) => setCountry(e.target.value.toUpperCase())} />
+        </label>
+        <label className="flex items-center gap-1.5 text-sm text-zinc-300" title="Tag shown to the scorer as domain context">
+          Sector
+          <input
+            className={`${input} !w-28`}
+            placeholder="e.g. fintech"
+            value={sector}
+            onChange={(e) => setSector(e.target.value)}
+          />
         </label>
         <button className={btnPrimary} disabled={busy || !text.trim()} onClick={doImport}>
           {busy ? "Importing…" : "Import"}

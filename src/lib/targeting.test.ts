@@ -118,6 +118,12 @@ test("devtools role scores below an equivalent fintech role", () => {
   assert.equal(boostedScore(60, "general-backend", BOOSTS), 60);
 });
 
+test("non-engineering and mobile-only roles get no domain boost", () => {
+  assert.equal(boostedScore(48, "ai-tooling", BOOSTS, "other"), 48); // e.g. "Director of Corp Dev" at an AI company
+  assert.equal(boostedScore(50, "fintech", BOOSTS, "mobile"), 50);
+  assert.equal(boostedScore(50, "fintech", BOOSTS, "backend"), 65);
+});
+
 test("boosted score is capped at 100 and tolerates a null domain", () => {
   assert.equal(boostedScore(95, "fintech", BOOSTS), 100);
   assert.equal(boostedScore(50, null, BOOSTS), 50);
@@ -158,6 +164,13 @@ test("category B's sponsored onsite/hybrid route only counts UK/Europe offices",
   const unknownRegion = classify({ ...f, officeRegion: "unknown" }, SETTINGS);
   assert.equal(unknownRegion.category, "none");
   assert.equal(unknownRegion.needsCheck, true);
+});
+
+test("onsite/hybrid roles are never Flagged, whatever remote eligibility the model reports", () => {
+  const f: TargetingFields = { workMode: "hybrid", remoteEligibility: "country-restricted", officeRegion: "uk-europe", seniority: "new-grad", minYearsExperience: 0, visaSignal: "yes" };
+  const c = classify(f, SETTINGS);
+  assert.equal(c.flagged, false);
+  assert.equal(c.category, "early-career");
 });
 
 test("early-career title keywords", () => {

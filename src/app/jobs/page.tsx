@@ -2,7 +2,17 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Card, Badge, ScoreBadge, eligibilityBadge, btnPrimary, btnSecondary, btnDanger, input } from "@/components/ui";
+import {
+  Card,
+  Badge,
+  ScoreBadge,
+  categoryBadge,
+  workModeBadge,
+  btnPrimary,
+  btnSecondary,
+  btnDanger,
+  input,
+} from "@/components/ui";
 
 interface Job {
   id: number;
@@ -14,6 +24,18 @@ interface Job {
   source: string;
   score: number | null;
   eligibility: string | null;
+  workMode: string | null;
+  remoteEligibility: string | null;
+  officeRegion: string | null;
+  isFintech: boolean | null;
+  fintechSubdomain: string | null;
+  seniority: string | null;
+  minYearsExperience: number | null;
+  domain: string | null;
+  targetCategory: string | null;
+  needsCheck: boolean | null;
+  locationQuote: string | null;
+  experienceQuote: string | null;
   visaSignal: string | null;
   scoreReasons: string | null;
   dismissReason: string | null;
@@ -43,8 +65,19 @@ const SORTS: { key: Sort; label: string }[] = [
 
 const TABS = [
   { key: "queued", label: "Queued" },
+  { key: "remote", label: "Remote", title: "Category A: fully remote, hireable from Nigeria, mid-level or below" },
+  {
+    key: "early",
+    label: "Early career",
+    title: "Category B: new grad / junior / ≤2 yrs — remote, or UK/Europe onsite/hybrid with sponsorship",
+  },
+  {
+    key: "needs-check",
+    label: "Needs check",
+    title: "Above threshold, but work mode or eligibility isn't stated — check the posting",
+  },
   { key: "new", label: "Below threshold" },
-  { key: "flagged", label: "Flagged", title: "Country-restricted roles" },
+  { key: "flagged", label: "Flagged", title: "Remote roles restricted to countries/regions that exclude Nigeria" },
   { key: "dismissed", label: "Dismissed" },
   { key: "all", label: "All" },
 ];
@@ -65,6 +98,7 @@ export default function JobsPage() {
   const [tab, setTab] = useState("queued");
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<Sort>("score");
+  const [fintech, setFintech] = useState(false);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
   const [dq, setDq] = useState<Record<number, DraftStatus>>({});
@@ -84,13 +118,13 @@ export default function JobsPage() {
   const load = useCallback(async () => {
     setLoading(true);
     const res = await fetch(
-      `/api/jobs?tab=${tab}${q ? `&q=${encodeURIComponent(q)}` : ""}${sort !== "score" ? `&sort=${sort}` : ""}`
+      `/api/jobs?tab=${tab}${q ? `&q=${encodeURIComponent(q)}` : ""}${sort !== "score" ? `&sort=${sort}` : ""}${fintech ? "&fintech=1" : ""}`
     );
     const data = await res.json();
     setJobs(data.jobs || []);
     setSelected(new Set()); // stale selections must not survive a tab/search/sort change
     setLoading(false);
-  }, [tab, q, sort]);
+  }, [tab, q, sort, fintech]);
 
   const toggleSelect = (id: number) =>
     setSelected((s) => {
@@ -231,6 +265,13 @@ export default function JobsPage() {
             {t.label}
           </button>
         ))}
+        <button
+          onClick={() => setFintech(!fintech)}
+          title="Only fintech-domain jobs (works inside any tab)"
+          className={`px-3 py-1.5 rounded-full text-sm border ${fintech ? "border-emerald-500 bg-emerald-900/50 text-emerald-200" : "border-zinc-700 text-zinc-400 hover:text-zinc-200"}`}
+        >
+          {fintech ? "✓ " : ""}Fintech
+        </button>
         <div className="ml-auto flex items-center gap-2">
           <select
             className={`${input} !w-44`}
@@ -305,7 +346,10 @@ export default function JobsPage() {
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 flex-wrap">
                   <ScoreBadge score={j.score} />
-                  {eligibilityBadge(j.eligibility)}
+                  {categoryBadge(j.targetCategory)}
+                  {workModeBadge(j)}
+                  {j.needsCheck && <Badge tone="yellow">needs check</Badge>}
+                  {j.isFintech && <Badge tone="blue">fintech{j.fintechSubdomain ? ` · ${j.fintechSubdomain}` : ""}</Badge>}
                   {j.visaSignal === "yes" && <Badge tone="green">visa: yes</Badge>}
                   {j.visaSignal === "likely" && <Badge tone="blue">visa: likely</Badge>}
                   {j.roleCategory && <Badge>{j.roleCategory}</Badge>}
@@ -327,6 +371,20 @@ export default function JobsPage() {
                     ago(j.firstSeenAt) && <span className="text-zinc-500"> · found {ago(j.firstSeenAt)}</span>
                   )}
                 </div>
+                {(j.locationQuote || j.experienceQuote) && (
+                  <div className="mt-1 space-y-0.5 text-xs text-zinc-500">
+                    {j.locationQuote && (
+                      <div>
+                        <span className="text-zinc-600">location:</span> “{j.locationQuote}”
+                      </div>
+                    )}
+                    {j.experienceQuote && (
+                      <div>
+                        <span className="text-zinc-600">experience:</span> “{j.experienceQuote}”
+                      </div>
+                    )}
+                  </div>
+                )}
                 {j.feedStatus === "dismissed" && j.dismissReason && (
                   <div className="text-xs text-amber-400/80 mt-1">dismissed: {j.dismissReason}</div>
                 )}

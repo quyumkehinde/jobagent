@@ -14,8 +14,8 @@ These were the decisions the project was built around:
 | Hosting | **Local-first, single user** | Free, private, and scraping from a residential IP gets blocked far less than cloud IPs. No auth layer needed. |
 | Stack | **One Next.js app + one worker process, one language** | UI, API routes, scraper, and AI layer share one TypeScript codebase and one set of types. |
 | Database | **SQLite (better-sqlite3 + Drizzle ORM)** | Zero setup, no daemon. Drizzle makes a later move to Postgres (for cloud deploy) a config change plus minor SQL dialect fixes. |
-| LLM | **Gemini API, free tier** | User has a free key. Everything is throttled and batched to fit free-tier RPM/RPD caps; quota exhaustion degrades gracefully (jobs wait, nothing breaks). |
-| Matching rules | Hard-coded eligibility taxonomy | Remote-worldwide / remote-region-restricted / onsite-Europe are eligible; **country-restricted** remote roles (e.g. "US only") are excluded from the queue and surfaced in a separate Flagged list. On-site Europe roles carry a visa-sponsorship signal. |
+| LLM | **Pluggable: headless Claude Code CLI (subscription) or OpenRouter** | `llmProvider` setting. Everything is throttled (`llmMinIntervalMs`) and batched; quota exhaustion degrades gracefully (jobs wait, nothing breaks). |
+| Matching rules | **Two target categories, decided in code** (`src/lib/targeting.ts`) | The model only classifies facts (work mode, remote eligibility, office region, seniority, min years, domain, visa). Code queues a job only if it scores ≥ threshold AND is in **A · remote** (fully remote, hireable from Nigeria, mid-level or below, ≤ `maxYearsRemote` years) or **B · early career** (new grad/junior/≤2 yrs, AND either A's remote bar or onsite/hybrid in the UK/Europe with visa `yes\|likely`). Remote roles restricted to a country/region excluding Nigeria go to **Flagged**; qualifying-if-resolved jobs with unstated work mode/eligibility go to **Needs check**. Nothing else queues. |
 | Volume | Max top-of-funnel | Everything above the queue threshold (default score ≥ 55) is queued — target 50+/day. |
 
 ## 2. System overview
@@ -24,7 +24,7 @@ These were the decisions the project was built around:
                 ┌─────────────────────────── worker (npm run worker) ───────────────────────────┐
                 │                                                                               │
   Greenhouse ─┐ │   ┌──────────┐    ┌────────────┐    ┌──────────────┐    ┌─────────────────┐   │
-  Lever      ─┼─┼──►│ connectors│──►│ ingest/dedupe│──►│ board discovery│──►│ Gemini scoring  │   │
+  Lever      ─┼─┼──►│ connectors│──►│ ingest/dedupe│──►│ board discovery│──►│   LLM scoring   │   │
   Ashby      ─┘ │   └──────────┘    └────────────┘    └──────────────┘    └─────────────────┘   │
   RemoteOK   ───┤        every N hours (cron) or on-demand via POST /api/pipeline               │
   WWR (RSS)  ───┤                                                                               │
@@ -83,11 +83,12 @@ jobagent/
     │   └── discovery.ts       # extracts ATS board tokens from aggregator posts
     ├── lib/
     │   ├── settings.ts        # settings KV + DEFAULTS
-    │   ├── gemini.ts          # Gemini client, throttle, retries, JSON mode
+    │   ├── llm.ts             # provider switch (claude CLI / openrouter), throttle, JSON repair
     │   ├── candidate.ts       # builds the candidate summary that grounds all AI calls
     │   ├── ingest.ts          # upsert/dedupe scraped jobs
     │   ├── resolve.ts         # company→board resolution (probing, name validation, web fallback)
-    │   ├── scoring.ts         # batch scoring: score + eligibility + visa signal
+    │   ├── scoring.ts         # batch scoring: model facts (work mode, eligibility, seniority, domain, visa)
+    │   ├── targeting.ts       # pure queueing rule: categories A/B, needs-check, flagged, domain boost
     │   ├── pipeline.ts        # orchestrates scrape → ingest → discover → score
     │   ├── forms.ts           # ATS form-schema fetching (FormField)
     │   ├── answers.ts         # application drafting: deterministic → QA bank → AI
@@ -106,7 +107,7 @@ jobagent/
         ├── applications/[id]/page.tsx   # review & submit screen
         ├── analytics/page.tsx
         ├── profile/page.tsx   # resume, intake fields, answer bank
-        ├── settings/page.tsx  # Gemini key, models, thresholds, company boards
+        ├── settings/page.tsx  # LLM provider/models, thresholds, target categories, company boards
         └── api/               # route handlers (see §9)
 ```
 
@@ -124,14 +125,17 @@ Timestamps are stored as unix epoch integers (Drizzle `mode: "timestamp"`). JSON
 | `careersUrl`, `country`, `resolveStatus`, `resolveNote` | resolution lifecycle: `pending → probing → resolved \| unresolved` (null = pre-existing row) |
 | `token` | board slug, e.g. `stripe` → `boards-api.greenhouse.io/v1/boards/stripe`. Unique per (ats, token). |
 | `origin` | `seed` (from seed/companies.json) · `discovery` (auto-found in aggregator posts) · `manual` (added in Settings) |
-| `visaSponsor` | tri-state: true/false/null(unknown). Shown as a badge; feeds ranking context. |
+| `visaSponsor` | tri-state: true/false/null(unknown). Shown as a badge; shown to the scorer ("known visa sponsor" → visa `likely`). |
+| `sector` | optional industry tag (e.g. `fintech`, set by import). Shown to the scorer as domain context. |
 | `errorCount`, `lastError`, `active` | **3-strike retirement**: each failed poll increments `errorCount`; at 3 the board is deactivated. A successful poll resets to 0. Re-enabling in Settings resets the count. |
 
 ### `jobs` — every posting ever seen
 - Identity: `(source, externalId)` unique — this is the dedupe key. Re-seen jobs only get `lastSeenAt` bumped.
 - Content: `title`, `companyName`, `location`, `salary`, `description` (plain text, capped at 20k chars), `url`, `applyUrl`, `raw` (original payload JSON, keeps the ATS board token for form fetching).
-- **AI verdict** (null until scored): `score` (0–100), `eligibility` (the 6-value taxonomy), `visaSignal` (`yes|likely|no|unknown`), `roleCategory` (`backend|infra|fullstack|mobile|other`), `scoreReasons` (JSON string[]), `scoredAt`.
-- **Feed lifecycle**: `feedStatus` = `new` (scored below threshold or not yet scored) → `queued` (passed threshold + eligible) → `dismissed` (user) or `applied` (drafted). The Flagged tab is not a status — it's a filter on `eligibility = 'country-restricted'`.
+- **Model facts** (null until scored): `baseScore` (the model's 0–100), `workMode` (`fully-remote|hybrid|onsite|unknown`), `remoteEligibility` (`worldwide|includes-nigeria|africa|emea-incl-africa|timezone-compatible|country-restricted|region-excludes-nigeria|unknown`), `officeRegion` (`uk-europe|other|unknown`), `seniority` (`new-grad|junior|mid|senior|staff-plus|unknown`), `minYearsExperience` (null = not stated), `domain` (`fintech|infra-devtools-data|ai-tooling|general-backend|other`), `isFintech` + `fintechSubdomain`, `visaSignal` (`yes|likely|no|unknown`), `roleCategory` (`backend|infra|fullstack|mobile|other`), `locationQuote` / `experienceQuote` (verbatim lines from the posting), `scoreReasons` (JSON string[]), `scoredAt`.
+- **Code verdict** (derived from the facts + settings, re-derived whenever settings change): `score` (= `baseScore` + domain boost, capped at 100), `targetCategory` (`remote|early-career|both|none`), `needsCheck`.
+- `eligibility` is the **legacy** 6-value taxonomy from before targeting; it is nulled when a job is rescored and only read for rows that haven't been (`workMode IS NULL`).
+- **Feed lifecycle**: `feedStatus` = `new` (below threshold, no category, or not yet scored) → `queued` (threshold + category A or B) → `dismissed` (user) or `applied` (drafted). Flagged, Needs check, Remote and Early career are filters, not statuses.
 
 ### `applications` — one per job (unique on `jobId`)
 - `status`: `drafting → ready → submitted → screening → interviewing → offer | rejected | ghosted | withdrawn`. The kanban columns map 1:1 to these.
@@ -157,13 +161,16 @@ Uploaded PDFs (files in `data/resumes/`, metadata + parsed JSON here). Exactly o
 `question`, `normalized` (lowercased, punctuation-stripped; unique), `answer`, `timesUsed`. See §8 for matching rules. This is the system's long-term memory: every question you ever answer gets reused.
 
 ### `scrapeRuns` — observability
-One row per source per run: `found`, `added`, `error`, timings. Shown on the Today dashboard.
+One row per source per run: `found`, `added`, `error`, timings. Shown on the Today dashboard. Each scoring pass also writes a `scoring` row whose `stats` JSON holds per-category counts (`scored, queued, remote, earlyCareer, both, needsCheck, flagged, fintech`) — the Analytics page's per-run table.
 
 ### `locks` — cross-process advisory locks
 One row per lock name (`pipeline` is the only one today): `owner` (pid+nonce), `acquiredAt`, `heartbeatAt`. See §6.
 
 ### `settings` — runtime config KV
-`geminiApiKey`, `scoringModel`, `writerModel`, `queueThreshold`, `maxQueuedPerCompany`, `scrapeIntervalHours`, `maxScoringPerRun`. Defaults in `src/lib/settings.ts` (`DEFAULTS`). `GEMINI_API_KEY` env var takes precedence over the stored key.
+`llmProvider`, `openrouterApiKey`, `scoringModel`, `writerModel`, `queueThreshold`, `maxQueuedPerCompany`, `maxYearsRemote` (4), `enableCategoryA` / `enableCategoryB` (on), `domainBoosts` (`{fintech: 15, infra-devtools-data: 10, ai-tooling: 8, general-backend: 0, other: 0}`), `scrapeIntervalHours`, `maxScoringPerRun`, … Defaults in `src/lib/settings.ts` (`DEFAULTS`). `OPENROUTER_API_KEY` env var takes precedence over the stored key.
+
+### Migrations
+Schema changes live in `src/db/schema.ts`; `npm run db:push` syncs a fresh DB. Hand-written additive migrations for existing DBs are in `drizzle/` (e.g. `0001_target_categories.sql`: the targeting columns, all nullable) — apply with `sqlite3 data/jobagent.db < drizzle/0001_target_categories.sql` after a backup.
 
 ## 5. Connectors (`src/connectors/`)
 
@@ -176,7 +183,7 @@ All connectors return the same shape, `RawJob`:
   location?, salary?, description?, postedAt?, raw? }
 ```
 
-**Title prefilter.** `titleLooksRelevant()` in `types.ts` runs before anything hits the DB: an include regex (software/backend/full-stack/mobile/infra/SRE/golang/typescript/…) and an exclude regex (recruiter, sales, PM, program manager, engineering manager, QA, intern, hardware, …). This is deliberately cheap and broad — its only job is to avoid wasting Gemini quota on obviously irrelevant roles. The real filtering is the scoring pass.
+**Title prefilter.** `titleLooksRelevant()` in `types.ts` runs before anything hits the DB: an include regex (software/backend/full-stack/mobile/infra/SRE/golang/typescript/…) and an exclude regex (recruiter, sales, PM, program manager, engineering manager, QA, intern, hardware, …). Early-career programme titles without a role word ("Graduate Programme – Technology") also pass when they pair an early-career keyword (new grad, graduate, entry, junior, early career, campus, associate) with a tech word. This is deliberately cheap and broad — its only job is to avoid wasting LLM quota on obviously irrelevant roles. The real filtering is the scoring pass.
 
 **HTML stripping.** `stripHtml()` converts ATS HTML descriptions to readable plain text (list markers, entity decoding including numeric entities, block-element line breaks).
 
@@ -184,11 +191,11 @@ Per-source notes:
 
 - **Greenhouse** (`greenhouse.ts`): `GET boards-api.greenhouse.io/v1/boards/{token}/jobs?content=true`. Public, no auth, no blocking. Content is double-HTML-encoded — decoded before stripping.
 - **Lever** (`lever.ts`): `GET api.lever.co/v0/postings/{token}?mode=json`. Includes `descriptionPlain` and structured salary ranges.
-- **Ashby** (`ashby.ts`): `GET api.ashbyhq.com/posting-api/job-board/{token}?includeCompensation=true`. Has `isRemote`, secondary locations, compensation tiers.
+- **Ashby** (`ashby.ts`): `GET api.ashbyhq.com/posting-api/job-board/{token}?includeCompensation=true`. Has `workplaceType`, `isRemote`, secondary locations, compensation tiers; the first three are kept in `raw` and shown to the scorer as structured fields.
 - **RemoteOK** (`remoteok.ts`): `GET remoteok.com/api`. Requires a browser User-Agent. First array element is a legal notice — filtered by requiring `id`/`position`/`company`.
 - **WeWorkRemotely** (`weworkremotely.ts`): 4 category RSS feeds (programming, back-end, full-stack, devops), hand-rolled regex RSS parser (no XML dependency), dedupes across feeds, splits WWR's `"Company: Role"` title convention.
 - **HN Who's Hiring** (`hn.ts`): finds the latest thread via Algolia (`author_whoishiring` stories), pulls up to 3 pages × 1000 comments, keeps **top-level** comments only (`parent_id === storyId`), parses the `Company | Role | Location` first-line convention. Titles are messy by nature — scoring reads the full text, so that's fine.
-- **YC job board** (`yc.ts`): the public directory at `ycombinator.com/jobs` (the public face of Work at a Startup). Pages are server-rendered with all data HTML-escaped inside a `data-page` attribute — the connector regex-extracts and JSON-parses it. Two-phase fetch: listing slices (`/jobs/role/software-engineer` + `/remote`, deduped by id) give title/salary/location/**visa sponsorship**; the detail page adds the markdown JD and any WaaS custom application questions. Detail pages are fetched **only for jobs not already in the DB** (the pipeline passes the known-ID set), capped at 40/run with a 200 ms gap; a job whose detail fetch fails or exceeds the cap is omitted entirely and retried next run — never ingested without its JD. Structured facts (visa, min experience, YC batch, job type, one-liner) are prepended to the description so the scoring excerpt sees them. Applying requires a WaaS login → always assisted mode.
+- **YC job board** (`yc.ts`): the public directory at `ycombinator.com/jobs` (the public face of Work at a Startup). Pages are server-rendered with all data HTML-escaped inside a `data-page` attribute — the connector regex-extracts and JSON-parses it. Two-phase fetch: listing slices (`/jobs/role/software-engineer` + `/remote`, deduped by id) give title/salary/location/**visa sponsorship**; the detail page adds the markdown JD and any WaaS custom application questions. Detail pages are fetched **only for jobs not already in the DB** (the pipeline passes the known-ID set), capped at 40/run with a 200 ms gap; a job whose detail fetch fails or exceeds the cap is omitted entirely and retried next run — never ingested without its JD. Structured facts (visa, min experience, YC batch, job type, one-liner) are prepended to the description so the scoring excerpt sees them, and min experience/visa/one-liner are also kept in `raw` as structured scorer fields. **Fintech coverage**: the listing pages have no industry filter, so each run also queries the YC company directory (Algolia; the public index-restricted search key is read from `ycombinator.com/companies` each run) for hiring companies tagged `Fintech` (~170) and reads each one's `/companies/{slug}/jobs` page (engineering roles only; tagged `sector: fintech`). **Detail fetches (capped at 60/run) go to targets first**: early-career postings ("Any (new grads ok)", ≤2 yrs, or an early-career title), then fintech, then the rest. Applying requires a WaaS login → always assisted mode.
 - **Discovery** (`discovery.ts`): regex-scans every aggregator job's URL + description for `boards.greenhouse.io/{token}`, `jobs.lever.co/{token}`, `jobs.ashbyhq.com/{token}`, greenhouse embed URLs. New `(ats, token)` pairs are inserted with `origin: "discovery"` and get polled as full boards on the next run. **This is how the company list grows itself.**
 
 Failure isolation: each company board and each aggregator is try/caught individually — one bad source never kills a run.
@@ -196,7 +203,7 @@ Failure isolation: each company board and each aggregator is try/caught individu
 ## 6. The pipeline (`src/lib/pipeline.ts`)
 
 ### Company resolution (`src/lib/resolve.ts`) — "paste any company list"
-`POST /api/companies/import` takes a pasted list of company names (e.g. the Dutch IND sponsor register; optional CSV `name,country,visaSponsor`), dedupes against existing companies on `nameNormalized` (lowercased, diacritics folded, legal suffixes like B.V./N.V./Stichting/Coöperatie stripped) — existing companies only get their flags updated — and inserts the rest as `resolveStatus: 'pending'`. At the start of every pipeline run, `resolvePendingCompanies()` works through a batch (`resolveBatchPerRun`, default 200): for each company it probes **all 9 ATSs × up to 4 slug candidates — platforms in parallel** (each platform's request rate is paced per registrable domain by `src/lib/hostgate.ts`; 4 companies resolve concurrently, so a 1000-company batch takes minutes, not hours). A 429 from any platform puts it in a 10-minute cooldown and the affected companies **defer** back to pending rather than concluding on partial evidence. **A hit only resolves if the board's self-reported name matches the company** (containment or bigram-Dice ≥ 0.75; name-less ATSs fall back to the board page's HTML title) — slug collisions can never claim someone else's board; ambiguity lands in `unresolved` with an actionable note. Probe misses fall back (capped at `resolveWebPerRun`/run) to: direct domain guesses (`{slug}.nl/.com`, title-validated) → keyless DuckDuckGo HTML search (anomaly-detection aborts it for the run) → homepage → careers-link crawl (incl. `vacatures`/`werken-bij`) → discovery-pattern scan of those pages. Resolved boards sweep the same run. Manual overrides (set ats+token, set careersUrl, retry) via `PATCH /api/companies`.
+`POST /api/companies/import` (logic in `src/lib/companyImport.ts`) takes a pasted list of company names (e.g. the Dutch IND sponsor register; optional CSV `name,country,visaSponsor`; optional `defaults.sector` tag), dedupes against existing companies on `nameNormalized` (lowercased, diacritics folded, legal suffixes like B.V./N.V./Stichting/Coöperatie stripped) — existing companies only get their flags updated — and inserts the rest as `resolveStatus: 'pending'`. At the start of every pipeline run, `resolvePendingCompanies()` works through a batch (`resolveBatchPerRun`, default 200): for each company it probes **all 9 ATSs × up to 4 slug candidates — platforms in parallel** (each platform's request rate is paced per registrable domain by `src/lib/hostgate.ts`; 4 companies resolve concurrently, so a 1000-company batch takes minutes, not hours). A 429 from any platform puts it in a 10-minute cooldown and the affected companies **defer** back to pending rather than concluding on partial evidence. **A hit only resolves if the board's self-reported name matches the company** (containment or bigram-Dice ≥ 0.75; name-less ATSs fall back to the board page's HTML title) — slug collisions can never claim someone else's board; ambiguity lands in `unresolved` with an actionable note. Probe misses fall back (capped at `resolveWebPerRun`/run) to: direct domain guesses (`{slug}.nl/.com`, title-validated) → keyless DuckDuckGo HTML search (anomaly-detection aborts it for the run) → homepage → careers-link crawl (incl. `vacatures`/`werken-bij`) → discovery-pattern scan of those pages. Resolved boards sweep the same run. Manual overrides (set ats+token, set careersUrl, retry) via `PATCH /api/companies`.
 
 ### Generic careers-page scraper (`src/connectors/generic.ts`) — last resort
 Two constituencies get the capped generic sweep (`genericCompaniesPerRun` 10/run, oldest-polled first, source `generic`): unresolved companies **with** a `careersUrl`, and — the vestigial-board fix — **resolved companies whose validated ATS board currently yields zero live jobs** (a Workable ghost while real jobs live on the company site; they drop back out the moment the board produces jobs, so no double-ingestion). Board-empty companies without a stored `careersUrl` get one discovered first (website → careers-link crawl, ≤5/run). Probing itself also prefers a non-empty validated board over an empty one when job counts are known (companies that migrated ATS often leave a dead account behind).
@@ -217,25 +224,47 @@ Per company: fetch the page → re-scan for late ATS links (hit → resolve prop
 
 The pipeline is triggered three ways: worker cron, `POST /api/pipeline` (fire-and-forget from the Today page button), or on worker startup.
 
-## 7. Scoring (`src/lib/scoring.ts`)
+## 7. Scoring (`src/lib/scoring.ts`) and targeting (`src/lib/targeting.ts`)
 
-**What it does:** turns "3,600 postings" into "a ranked queue of jobs you can actually get."
+**What it does:** turns "9,000 postings" into "a ranked queue of jobs in the two target categories."
 
-- Selects unscored jobs (`scoredAt IS NULL AND feedStatus = 'new' AND closed = 0`), capped at `maxScoringPerRun` (default 120/run to respect free-tier daily caps), **ordered visa-sponsor-companies-first, then newest-first** — so after a large import the queue is useful from day 1 while the backlog drains.
-- Batches **8 jobs per Gemini call** (title + company + location + salary + first 1800 chars of description each), with the candidate summary (§8.1) prepended.
-- Uses Gemini **JSON mode** (`responseSchema`) so output is machine-parseable by construction: per job → `{ index, score, eligibility, visaSignal, roleCategory, reasons[≤3] }`.
-- The system prompt encodes the hard rules: ineligible jobs score <30 regardless of skill fit; eligibility must be read strictly from location language; ambiguity → `unknown` (which stays eligible — better to over-queue than silently drop); visa `yes` only if stated in the posting.
-- **Dismissal feedback loop**: dismissing a job optionally takes a free-text reason ("managerial, needs 8+ yrs, I'm mid-level"). The 15 most recent reasons (with job title + company) ride along in every scoring prompt as explicit negative preferences, and the system prompt instructs the model to sink jobs matching a dismissed pattern and name the pattern in its reasons. Restoring a job removes it from the feedback set.
-- **Queueing decision** (code, not model): `score ≥ queueThreshold` **AND** eligibility ∈ {remote-worldwide, remote-region-restricted, onsite-europe, unknown} → `feedStatus = 'queued'`. `country-restricted` can never queue — it lands in the Flagged tab.
-- **Per-company cap** (`rebalanceCompanyQueues`, runs after every scoring pass — even a no-op one): each company (matched on normalized `companyName`) keeps at most `maxQueuedPerCompany` (default 5) jobs queued, best score first; the overflow is demoted back to `new`. Demoted jobs keep their scores, so when a slot frees up (dismiss, draft, higher scorer leaves) the next-best is promoted automatically. Only `new ⇄ queued` transitions — dismissed/applied are never touched, and currently-queued jobs win score ties to avoid churn. Note a manually queued job competes on score like any other and can be demoted if the company is over cap.
+**Division of labour.** The model *classifies*; code *decides*. The model never chooses what queues — it reports facts read from the posting, and the pure functions in `targeting.ts` (`classify`, `shouldQueue`, `boostedScore`, unit-tested in `targeting.test.ts`, `npm test`) turn those facts into a verdict.
+
+### Selection
+- Never-scored jobs (`scoredAt IS NULL`, `feedStatus ∈ {new, queued}`, not closed), **plus the one-off rescore**: jobs scored under the old eligibility taxonomy (`workMode IS NULL`) in the last 30 days that are still `new`/`queued`. Applied/dismissed jobs are never rescored. Rescoring sets `workMode`, so the rescore drains itself across runs.
+- Capped at `maxScoringPerRun` (shared by both kinds), ordered never-scored first → early-career titles → visa-sponsor companies → newest.
+
+### The model call
+- **8 jobs per call**: title, company, location, salary, a `[structured ATS fields]` block (Ashby `workplaceType`/`isRemote`/secondary locations, YC min experience/visa/one-liner, company `sector` tag, known-sponsor flag), and the description excerpt (first 1800 chars + eligibility sentences pinned from further down), with the candidate summary (§8.1) and the dismissal feedback prepended.
+- JSON schema output per job: `{ index, score, workMode, remoteEligibility, officeRegion, isFintech, fintechSubdomain, minYearsExperience, seniority, domain, targetCategory, visaSignal, roleCategory, locationQuote, experienceQuote, reasons[≤3] }`.
+- The system prompt's rules: read location, work mode and experience **strictly** from the posting and structured fields, `unknown`/null when unstated, never inferred from HQ or reputation; hybrid/"remote-first but X days in office"/"within commuting distance" are not fully remote; "hireable from Nigeria" = worldwide / names Nigeria or Africa / EMEA not excluding Africa / a timezone band containing UTC+1 (EOR/contractor mentions are a hint, not proof); domain is judged by the company's product, using the company description when the JD is vague; `score` is skill/seniority fit with **no** domain preference (and early-career roles aren't marked down for asking less than the candidate has); the first reason must quote the location or experience line. `targetCategory` from the model is advisory — code re-derives it (disagreements are counted in the run log).
+- **Dismissal feedback loop**: dismissing a job optionally takes a free-text reason ("managerial, needs 8+ yrs, I'm mid-level"). The 15 most recent reasons (with job title + company) ride along in every scoring prompt as explicit negative preferences. Restoring a job removes it from the feedback set.
+
+### The queueing rule (code)
+```
+hireable  = remoteEligibility ∈ {worldwide, includes-nigeria, africa, emea-incl-africa, timezone-compatible}
+remoteOk  = workMode = fully-remote AND hireable
+A         = remoteOk AND seniority ∉ {senior, staff-plus} AND (minYears null OR ≤ maxYearsRemote)
+early     = seniority ∈ {new-grad, junior} OR minYears ≤ 2
+B         = early AND (remoteOk OR (workMode ∈ {onsite, hybrid} AND officeRegion = uk-europe AND visa ∈ {yes, likely}))
+score     = min(100, baseScore + domainBoosts[domain])   -- no boost for roleCategory mobile/other
+queue  if score ≥ queueThreshold AND (A OR B)            -- A/B individually switchable in Settings
+```
+- **Flagged**: `remoteEligibility ∈ {country-restricted, region-excludes-nigeria}` on a remote/unknown-mode role.
+- **Needs check**: no category, not flagged, the work mode/eligibility (or, for a sponsored onsite/hybrid role, the office region) is unknown, and the job would qualify for A or B if that unknown resolved favourably. The tab shows these at ≥ threshold. `unknown` never queues on its own.
+- A job queued by hand before it was ever scored stays queued; every other job is decided by the rule.
+- **Domain priority** is a score boost, not a gate: fintech/crypto infrastructure > infra/devtools/data > AI tooling > general backend (defaults 15/10/8/0).
+
+### After scoring
+- **Per-company cap** (`rebalanceCompanyQueues`, runs after every scoring pass — even a no-op one — and whenever a targeting setting is saved): first re-derives `score`/`targetCategory`/`needsCheck` of every scored `new`/`queued` job from its stored facts, so changing boosts, toggles, the experience ceiling or the threshold takes effect without rescoring. Then each company (normalized `companyName`) keeps at most `maxQueuedPerCompany` queued, best score first; the overflow is demoted to `new` and promoted back when a slot frees up. Only `new ⇄ queued` transitions; currently-queued jobs win score ties. Rows scored before targeting (no facts) are never queue-worthy.
+- Per-run category counts are written to a `scoring` row in `scrapeRuns.stats`.
 - Failure handling: a failed batch is logged and skipped; a 429/quota error aborts the scoring phase — unscored jobs simply wait for the next run. **Quota exhaustion is a delay, never data loss.**
+- `scripts/eval-scoring.ts` runs the spec's acceptance JDs through the live model + rule (one LLM call) — use it after touching the prompt.
 
-### Gemini plumbing (`src/lib/gemini.ts`)
-- Client from `GEMINI_API_KEY` env or the settings table.
-- Global throttle: ≥6.5 s between calls (~9 RPM, under the free tier's 10 RPM).
-- Retries: 4 attempts on 429/503/UNAVAILABLE/empty, with 20/40/60 s backoff on quota errors.
-- `generateJSON<T>()` strips accidental markdown fences before `JSON.parse`.
-- Models are settings-driven: `scoringModel` and `writerModel` both default to `gemini-2.5-flash`; switch the writer to `gemini-2.5-pro` if you have quota.
+### LLM plumbing (`src/lib/llm.ts`)
+- Provider from the `llmProvider` setting: `claude` (headless `claude -p` on the user's subscription, `src/lib/claude.ts`, JSON schema via `--json-schema`) or `openrouter` (`src/lib/openrouter.ts`, key from `OPENROUTER_API_KEY` or Settings, 4 attempts with backoff on 429/5xx).
+- Global throttle: ≥ `llmMinIntervalMs` between calls.
+- `generateJSON<T>()` strips fences/lead-in prose, repairs invalid escapes/control characters inside strings, and retries once on invalid JSON.
 
 ## 8. The application engine
 
@@ -313,12 +342,12 @@ MV3, no build step; load unpacked from `extension/` (README there). Permissions:
 ## 10. UI (all client components, dark theme, Tailwind v4)
 
 - **Today (`/`)** — stat cards (ready for review / queued / follow-ups due), review shortcuts, due follow-ups, top of queue, scrape-run health table, the **Scrape & score now** button. Polls every 15 s.
-- **Jobs (`/jobs`)** — tabbed ranked feed, plus **"+ Add job by URL"** (paste any posting; extraction + queueing is automatic). Each card: score badge (green ≥75 / yellow ≥55 / red), eligibility badge, visa badge, role category, source, salary; **Why?** expands the model's reasons; **Draft application** → enqueues a background draft (per-card status, "Open draft" when ready — queue several without waiting); **Applied** → mark as applied without drafting (`PATCH {feedStatus:"applied"}` creates a minimal submitted application + event so it lands in tracking — for jobs applied to outside the app); Dismiss (with optional why — feeds the scorer)/Restore; **select-all + bulk dismiss** with one shared reason (`PATCH /api/jobs {ids, feedStatus, dismissReason?}`) for cases like "all country-restricted roles of one company"; the Dismissed tab shows stored reasons.
+- **Jobs (`/jobs`)** — tabbed ranked feed, plus **"+ Add job by URL"** (paste any posting; extraction + queueing is automatic). Tabs: Queued · **Remote** (category A) · **Early career** (category B) · **Needs check** · Below threshold · Flagged · Dismissed · All, plus a **Fintech** chip that narrows any tab. Each card: score badge (green ≥75 / yellow ≥55 / red), category badge (A · remote / B · early career / A+B), work-mode badge (remote · where it can hire from, or hybrid/onsite · office region), needs-check and fintech badges, visa badge, role category, source, salary, and the quoted location and experience lines; **Why?** expands the model's reasons; **Draft application** → enqueues a background draft (per-card status, "Open draft" when ready — queue several without waiting); **Applied** → mark as applied without drafting (`PATCH {feedStatus:"applied"}` creates a minimal submitted application + event so it lands in tracking — for jobs applied to outside the app); Dismiss (with optional why — feeds the scorer)/Restore; **select-all + bulk dismiss** with one shared reason (`PATCH /api/jobs {ids, feedStatus, dismissReason?}`) for cases like "all country-restricted roles of one company"; the Dismissed tab shows stored reasons.
 - **Application review (`/applications/[id]`)** — the money screen: status selector, submit panel (auto-submit where supported / open form / mark-as-applied), the **copilot box** (plain-language edits to resume/cover letter/answers), the **resume card** (tailored-vs-default status, view PDF, re-tailor), every answer as an editor (type-appropriate input, confidence badge, copy button, save + remember), cover-letter editor, next-action reminder, notes, event timeline, JD snapshot.
 - **Pipeline (`/board`)** — HTML5 drag-and-drop kanban over the application statuses; cards show overdue follow-up warnings; status changes persist via PATCH and log events.
-- **Analytics (`/analytics`)** — submitted count, response rate (responded = screening+interviewing+offer over submitted), interviews, offers; by-source table; per-week submissions; funnel stats (discovered → scored → queued → flagged).
+- **Analytics (`/analytics`)** — submitted count, response rate (responded = screening+interviewing+offer over submitted), interviews, offers; by-source table; per-week submissions; funnel stats (discovered → scored → queued → flagged); per-scoring-run category counts (A / B / A+B / needs check / flagged / fintech / queued).
 - **Profile (`/profile`)** — resume upload/parse status, basics, links, the "what applications always ask" intake (work authorization free-text is deliberately precise-form — it's fed verbatim to the AI), extra context, and the answer bank editor.
-- **Settings (`/settings`)** — Gemini key (env-aware), model names, queue threshold, per-company queue cap, scrape interval, per-run scoring cap, close-after days, Gemini call gap (the paid-tier lever), the **bulk-import panel** (paste the IND register → live resolution progress), and the company-board table (add/enable/disable, error visibility, seed/discovery/manual origin badges).
+- **Settings (`/settings`)** — LLM provider + OpenRouter key (env-aware), model names, queue threshold, target categories (A/B toggles, category A experience ceiling, per-domain score boosts), per-company queue cap, scrape interval, per-run scoring cap, close-after days, LLM call gap (the paid-tier lever), the **bulk-import panel** (paste the IND register → live resolution progress; optional sector tag), and the company-board table (add/enable/disable, error visibility, seed/discovery/manual origin badges).
 
 Shared primitives live in `src/components/ui.tsx`; save-on-blur is the form idiom throughout.
 
@@ -330,7 +359,8 @@ Shared primitives live in `src/components/ui.tsx`; save-on-blur is the form idio
 - **Bulk-import scale math** (6,000-company register): resolution ≈ 180–220k HTTP requests total; at 200 companies/run × 8 runs/day the probe pass completes in ~4 days (web-fallback tail longer at 40/run). Expect 25–40% to resolve to a supported ATS, 10–20% careersUrl-only (generic/manual), the rest unresolved (hospitals/universities/Workday shops — Workday support is the biggest future coverage lever). Sweep cost grows ~0.5 s/board. Scoring backlog 8–15k jobs: free tier drains ~960/day (9–16 days, sponsor-first so the good stuff surfaces immediately); paid tier = raise `maxScoringPerRun`, drop `geminiMinIntervalMs` (~500) in Settings — whole backlog costs single-digit dollars on flash and drains in hours. No code change needed.
 - **Headless rendering**: JS-careers-page scraping needs Google Chrome installed (used via playwright-core `channel: "chrome"`); alternatively `npx playwright install chromium`. Without either, rendering is disabled with a logged warning and scraping stays static-only.
 - **LaTeX**: resume tailoring needs `tectonic` on PATH (`brew install tectonic`; the first compile downloads packages, later ones are fast). Without it, tailoring fails soft and applications use the default PDF.
-- **Reset scoring** (e.g. after changing the prompt): `sqlite3 data/jobagent.db "UPDATE jobs SET scored_at=NULL, score=NULL WHERE feed_status='new';"`
+- **Reset scoring** (e.g. after changing the prompt): `sqlite3 data/jobagent.db "UPDATE jobs SET scored_at=NULL, score=NULL WHERE feed_status='new';"`. Changing only boosts/toggles/threshold needs no reset — saving them re-derives verdicts.
+- **Fintech seed**: `npm run seed:fintech` imports `seed/fintech-companies.txt` (payments, crypto infrastructure, banking APIs, billing) through the bulk-import path, tagged `sector=fintech`; resolution finds their boards on the next runs.
 - **Postgres migration path**: swap the Drizzle driver/dialect, re-run `db:push`, replace the two raw-SQL analytics queries (`strftime` → `to_char`). Schema and app code otherwise carry over.
 
 ## 12. Known limitations (honest list)
@@ -338,7 +368,7 @@ Shared primitives live in `src/components/ui.tsx`; save-on-blur is the form idio
 1. **Programmatic submit is fragile by design of the ATS ecosystem** — captchas win; assisted mode is the dependable path (and the v2 extension's job).
 2. **SmartRecruiters/BambooHR/Personio forms aren't introspected** (captcha-walled or no public form API) — those get the standard field set; custom questions surface only on the real form. Greenhouse, Ashby, Lever, Workable and Recruitee are all introspected for real since 2026-08.
 3. **QA-bank matching is string containment**, not semantic — "Why do you want to work here?" vs "What excites you about this role?" are different entries. (Cheap fix later: embedding similarity.)
-4. **Eligibility classification is LLM judgment** — strict prompt + `unknown`-stays-eligible biases it toward false positives (wasted review seconds) over false negatives (missed jobs), which is the right failure direction.
+4. **The facts are LLM judgment** — the queueing rule is exact, but it runs on the model's reading of work mode, eligibility, seniority and domain. Unknowns never queue; the ones that could qualify surface in Needs check rather than being dropped. Misreads happen (e.g. a Director role labeled `backend`/`mid`) — `scripts/eval-scoring.ts` is the regression check for prompt changes.
 5. **No inbox integration yet** — ghosted/rejected/screening transitions are manual until the v1.5 Gmail sync.
 6. **36 of the 125 seed board tokens were stale** at first run — expected; the 3-strike system retires them and discovery/manual adds replace them.
 7. **Company resolution is conservative by design** — no name validation, no auto-resolve; expect a meaningful unresolved pile (fix via the Settings override, or wait for better evidence). Empty-but-valid boards (e.g. a company with a vestigial Workable account) resolve "correctly" yet yield no jobs — the real careers site then needs the careersUrl/generic path or a manual override. JS-rendered careers pages are handled by the headless fetcher (§6); the remaining wall is **aggressive bot protection that blocks even real-Chrome headless** — those fail soft with a note. DuckDuckGo can rate-limit the web fallback (detected, non-fatal, probe path unaffected).

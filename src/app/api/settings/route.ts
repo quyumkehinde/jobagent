@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSetting, setSetting, DEFAULTS } from "@/lib/settings";
+import { getSetting, setSetting, getTargetingSettings, DEFAULTS } from "@/lib/settings";
+import { rebalanceCompanyQueues } from "@/lib/scoring";
+
+// settings that change code-owned verdicts — saving one re-derives scores/categories now
+const TARGETING_KEYS = ["maxYearsRemote", "enableCategoryA", "enableCategoryB", "domainBoosts", "queueThreshold"];
 
 export async function GET() {
   const settings = {
@@ -10,6 +14,7 @@ export async function GET() {
     writerModel: await getSetting("writerModel", DEFAULTS.writerModel),
     queueThreshold: await getSetting("queueThreshold", DEFAULTS.queueThreshold),
     maxQueuedPerCompany: await getSetting("maxQueuedPerCompany", DEFAULTS.maxQueuedPerCompany),
+    ...(await getTargetingSettings()),
     scrapeIntervalHours: await getSetting("scrapeIntervalHours", DEFAULTS.scrapeIntervalHours),
     maxScoringPerRun: await getSetting("maxScoringPerRun", DEFAULTS.maxScoringPerRun),
     closeAfterDays: await getSetting("closeAfterDays", DEFAULTS.closeAfterDays),
@@ -29,6 +34,10 @@ export async function PUT(req: NextRequest) {
     "writerModel",
     "queueThreshold",
     "maxQueuedPerCompany",
+    "maxYearsRemote",
+    "enableCategoryA",
+    "enableCategoryB",
+    "domainBoosts",
     "scrapeIntervalHours",
     "maxScoringPerRun",
     "closeAfterDays",
@@ -41,5 +50,10 @@ export async function PUT(req: NextRequest) {
   for (const key of allowed) {
     if (key in body && body[key] !== "•••set•••") await setSetting(key, body[key]);
   }
+  if (TARGETING_KEYS.some((k) => k in body))
+    await rebalanceCompanyQueues(
+      await getSetting("queueThreshold", DEFAULTS.queueThreshold),
+      await getSetting("maxQueuedPerCompany", DEFAULTS.maxQueuedPerCompany)
+    );
   return NextResponse.json({ ok: true });
 }

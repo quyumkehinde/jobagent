@@ -1,0 +1,101 @@
+Stripe
+Adyen
+Checkout.com
+Paystack
+Flutterwave
+Moniepoint
+Kuda
+Chipper Cash
+Mono
+Paga
+LemFi
+Grey
+Afriex
+Yellow Card
+Wise
+Revolut
+Monzo
+Starling Bank
+GoCardless
+Mollie
+Klarna
+Plaid
+Marqeta
+Modern Treasury
+Increase
+Unit Finance
+Lithic
+Moov
+Synctera
+Treasury Prime
+Airwallex
+Rapyd
+Nium
+dLocal
+Ebury
+Payoneer
+Primer
+SumUp
+TrueLayer
+Tink
+Yapily
+Railsr
+Modulr
+ClearBank
+Thought Machine
+Mambu
+10x Banking
+Pleo
+Payhawk
+Spendesk
+Qonto
+N26
+bunq
+Trade Republic
+Upvest
+Solaris
+Ramp
+Brex
+Mercury
+Deel
+Remote.com
+Chargebee
+Paddle
+Recurly
+Orb
+Metronome
+Lago
+Zuora
+Formance
+Numeral
+Pennylane
+Alpaca
+DriveWealth
+Databento
+Chainalysis
+Fireblocks
+Anchorage Digital
+BitGo
+Circle
+Coinbase
+Kraken
+Gemini
+Bitso
+Bitpanda
+Ledger
+Paxos
+Zero Hash
+MoonPay
+Ramp Network
+Transak
+Alchemy
+ConsenSys
+Chainlink Labs
+Ripple
+Sardine
+Alloy
+ComplyAdvantage
+Unit21
+Sift
+Feedzai
+Hawk AI

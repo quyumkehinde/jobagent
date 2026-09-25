@@ -1,26 +1,48 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db, tables } from "@/db";
-import { and, asc, desc, eq, inArray, like, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, like, or, sql } from "drizzle-orm";
 import { UA, stripHtml } from "@/connectors/types";
 import { genericExternalId } from "@/connectors/generic";
 import { fetchJobFromUrl } from "@/connectors/fromUrl";
 import { ingestJobs } from "@/lib/ingest";
 import { renderPage, closeBrowser } from "@/lib/browser";
+import { getSetting, DEFAULTS } from "@/lib/settings";
+import { FLAGGED } from "@/lib/targeting";
 
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
-  const tab = sp.get("tab") || "queued"; // queued | new | flagged | dismissed | all
+  // queued | remote | early | needs-check | new | flagged | dismissed | all
+  const tab = sp.get("tab") || "queued";
+  const fintechOnly = sp.get("fintech") === "1"; // chip that narrows any tab
   const search = sp.get("q");
   // score | recent (newest activity, posted-or-found) | posted (employer date, nulls last)
   const sortParam = sp.get("sort");
   const sort = sortParam === "recent" || sortParam === "posted" ? sortParam : "score";
 
+  const live = [inArray(tables.jobs.feedStatus, ["new", "queued"]), eq(tables.jobs.closed, false)];
   const conds = [];
   // closed roles vanish from the actionable tabs (they stay reachable via "all")
   if (tab === "queued") conds.push(eq(tables.jobs.feedStatus, "queued"), eq(tables.jobs.closed, false));
   else if (tab === "new") conds.push(eq(tables.jobs.feedStatus, "new"), eq(tables.jobs.closed, false));
-  else if (tab === "flagged") conds.push(eq(tables.jobs.eligibility, "country-restricted"));
+  else if (tab === "remote") conds.push(...live, inArray(tables.jobs.targetCategory, ["remote", "both"]));
+  else if (tab === "early") conds.push(...live, inArray(tables.jobs.targetCategory, ["early-career", "both"]));
+  else if (tab === "needs-check") {
+    // ambiguous location/work mode on a job good enough to queue if it resolved the right way
+    const threshold = await getSetting("queueThreshold", DEFAULTS.queueThreshold);
+    conds.push(...live, eq(tables.jobs.needsCheck, true), gte(tables.jobs.score, threshold));
+  } else if (tab === "flagged")
+    conds.push(
+      or(
+        and(
+          inArray(tables.jobs.remoteEligibility, [...FLAGGED]),
+          inArray(tables.jobs.workMode, ["fully-remote", "unknown"]) // mirrors classify()
+        ),
+        // rows not yet rescored under the targeting schema keep their legacy verdict
+        and(isNull(tables.jobs.workMode), eq(tables.jobs.eligibility, "country-restricted"))
+      )
+    );
   else if (tab === "dismissed") conds.push(eq(tables.jobs.feedStatus, "dismissed"));
+  if (fintechOnly) conds.push(eq(tables.jobs.isFintech, true));
   if (search) {
     conds.push(
       or(like(tables.jobs.title, `%${search}%`), like(tables.jobs.companyName, `%${search}%`))

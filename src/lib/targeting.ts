@@ -87,7 +87,13 @@ export function classify(f: TargetingFields, s: TargetingSettings): Classificati
   const catB = s.enableCategoryB && early && (remoteOk || onsiteOk);
   const category: TargetCategory = catA && catB ? "both" : catA ? "remote" : catB ? "early-career" : "none";
 
-  const flagged = f.remoteEligibility != null && FLAGGED.includes(f.remoteEligibility);
+  // remote eligibility only means something for (possibly) remote roles — a hybrid London
+  // role the model tagged "country-restricted" is not a Flagged remote job
+  const flagged =
+    f.workMode !== "hybrid" &&
+    f.workMode !== "onsite" &&
+    f.remoteEligibility != null &&
+    FLAGGED.includes(f.remoteEligibility);
   // Unknown no longer queues — but a job that WOULD qualify if the unknown resolved the
   // right way must not vanish silently. Onsite/hybrid jobs don't need remote eligibility,
   // so an unknown there is not ambiguous — only an unknown office region is.
@@ -107,8 +113,17 @@ export function shouldQueue(score: number | null, threshold: number, c: Classifi
   return score != null && score >= threshold && c.category !== "none";
 }
 
-export function boostedScore(baseScore: number, domain: Domain | null, boosts: DomainBoosts): number {
-  const boost = domain ? (boosts[domain] ?? 0) : 0;
+// Roles that get no domain boost however good the company's domain is: frontend-only,
+// mobile-only and non-engineering (roleCategory "other"/"mobile").
+const UNBOOSTED_ROLES = ["mobile", "other"];
+
+export function boostedScore(
+  baseScore: number,
+  domain: Domain | null,
+  boosts: DomainBoosts,
+  roleCategory: string | null = null
+): number {
+  const boost = domain && !UNBOOSTED_ROLES.includes(roleCategory ?? "") ? (boosts[domain] ?? 0) : 0;
   return Math.max(0, Math.min(100, Math.round(baseScore + boost)));
 }
 

@@ -24,7 +24,7 @@ const log = createLogger("scoring");
 // jobs scored under the old eligibility taxonomy this recently are rescored once (see scoreUnscored)
 const RESCORE_WINDOW_DAYS = 30;
 
-interface ScoreResult {
+export interface ScoreResult {
   index: number;
   score: number;
   workMode: WorkMode;
@@ -43,7 +43,7 @@ interface ScoreResult {
   reasons: string[];
 }
 
-const RESPONSE_SCHEMA = {
+export const RESPONSE_SCHEMA = {
   type: "array",
   items: {
     type: "object",
@@ -72,7 +72,11 @@ const RESPONSE_SCHEMA = {
       domain: { type: "string", enum: ["fintech", "infra-devtools-data", "ai-tooling", "general-backend", "other"] },
       targetCategory: { type: "string", enum: ["remote", "early-career", "both", "none"] },
       visaSignal: { type: "string", enum: ["yes", "likely", "no", "unknown"] },
-      roleCategory: { type: "string", enum: ["backend", "infra", "fullstack", "mobile", "other"] },
+      roleCategory: {
+        type: "string",
+        enum: ["backend", "infra", "fullstack", "mobile", "other"],
+        description: "other = frontend-only, non-engineering, or anything else",
+      },
       locationQuote: { type: ["string", "null"], description: "verbatim location / work-mode line from the posting" },
       experienceQuote: { type: ["string", "null"], description: "verbatim experience requirement line from the posting" },
       reasons: { type: "array", items: { type: "string" }, maxItems: 3 },
@@ -98,7 +102,7 @@ const RESPONSE_SCHEMA = {
   },
 };
 
-const SYSTEM = `You are a precise job-classification engine for one specific candidate, based in Lagos, Nigeria (UTC+1). You classify; code decides what gets queued. For each job output:
+export const SYSTEM = `You are a precise job-classification engine for one specific candidate, based in Lagos, Nigeria (UTC+1). You classify; code decides what gets queued. For each job output:
 
 FACTS — read strictly from the posting text, the Location line and any [structured ATS fields] block. When a fact is not stated, answer "unknown"/null. Never infer from the company's reputation, HQ city, or what is typical.
 - workMode:
@@ -113,11 +117,11 @@ FACTS — read strictly from the posting text, the Location line and any [struct
   * timezone-compatible: a timezone band that includes UTC+1 (e.g. "UTC-1 to UTC+3", "CET ±3h").
   * country-restricted: limited to specific countries not including Nigeria ("Remote (US only)", "Remote UK", "must be authorized to work in X").
   * region-excludes-nigeria: a region that excludes Nigeria ("Remote Europe/EU", "Americas", "LATAM").
-  * unknown: not stated, or the role isn't remote.
+  * unknown: not stated, or the role is hybrid/onsite (never use the restricted values for a non-remote role).
   EOR/Deel/Remote.com/contractor mentions are a positive hint but not proof of eligibility on their own.
 - officeRegion (for onsite/hybrid roles — where the office is): uk-europe (UK or any European country), other, unknown (not stated, or fully remote).
 - minYearsExperience: the minimum years the posting requires (e.g. "3+ years" -> 3, "2-4 years" -> 2); null if not stated. "Any (new grads ok)" -> 0.
-- seniority: new-grad (new grad/graduate/campus/entry level), junior, mid, senior (senior/lead), staff-plus (staff/principal/distinguished/manager/head of), unknown. Take it from the title and JD.
+- seniority: new-grad (new grad/graduate/campus/entry level), junior, mid, senior (senior/lead), staff-plus (staff/principal/distinguished/manager/head of/director/VP), unknown. Take it from the title and JD.
 - visaSignal: "yes" only if the posting states visa sponsorship/relocation; "likely" if the company is flagged as a known sponsor or a [structured ATS fields] block says it sponsors; "no" if the posting says no sponsorship or no relocation; else "unknown".
 - locationQuote / experienceQuote: copy the posting's location/work-mode sentence and its experience-requirement sentence VERBATIM (short). null if there is none.
 
@@ -125,7 +129,7 @@ DOMAIN — judge by what the company's product is, not a stray keyword in the JD
 - isFintech + fintechSubdomain: payments, banking/neobank, lending, cards, treasury, stablecoins/crypto infrastructure and exchanges, trading/market data, billing, accounting/ledger, payroll, FX/remittance, insurtech, fraud/risk/compliance tooling, financial-infrastructure APIs.
 - domain: fintech (any of the above, incl. crypto infrastructure) | infra-devtools-data (infrastructure, developer tools, data infrastructure: Go, Kubernetes, Postgres, event pipelines) | ai-tooling (AI tooling, agent infrastructure) | general-backend | other (frontend-only, mobile-only, non-engineering, anything else).
 
-SCORE — 0-100 fit of the candidate's skills and seniority to the role, and whether they can realistically get it. Do NOT add any preference for domain (that is applied in code). Frontend-only, mobile-only and non-engineering roles score low on skill fit. Roles that clearly fail both target categories below score under 30.
+SCORE — 0-100 fit of the candidate's skills and seniority to the role, and whether they can realistically get it. Do NOT add any preference for domain (that is applied in code). Frontend-only, mobile-only and non-engineering roles score low on skill fit. Early-career roles (new grad / junior) are a deliberate target: do NOT mark them down for asking less experience than the candidate has. Roles that clearly fail both target categories below score under 30.
 
 TARGET CATEGORIES (propose targetCategory; code re-derives it from your facts):
 - remote: fully remote AND hireable from Nigeria (worldwide / includes-nigeria / africa / emea-incl-africa / timezone-compatible) AND mid-level or below.
@@ -146,11 +150,12 @@ interface TargetingRow {
   seniority: Seniority | null;
   minYearsExperience: number | null;
   visaSignal: VisaSignal | null;
+  roleCategory: string | null;
 }
 
 // Derives everything code owns from the model's facts: final score and category.
-function decide(row: TargetingRow, t: TargetingSettings & { domainBoosts: DomainBoosts }) {
-  const score = row.baseScore == null ? null : boostedScore(row.baseScore, row.domain, t.domainBoosts);
+export function decide(row: TargetingRow, t: TargetingSettings & { domainBoosts: DomainBoosts }) {
+  const score = row.baseScore == null ? null : boostedScore(row.baseScore, row.domain, t.domainBoosts, row.roleCategory);
   return { score, ...classify(row, t) };
 }
 
@@ -187,6 +192,7 @@ export async function rebalanceCompanyQueues(
       seniority: true,
       minYearsExperience: true,
       visaSignal: true,
+      roleCategory: true,
       targetCategory: true,
       needsCheck: true,
     },
@@ -411,6 +417,7 @@ export async function scoreUnscored(limit?: number): Promise<{ scored: number; q
           seniority: r.seniority,
           minYearsExperience: r.minYearsExperience,
           visaSignal: r.visaSignal,
+          roleCategory: r.roleCategory,
         };
         const d = decide(facts, targeting);
         if (r.targetCategory !== d.category) overridden++; // the model's proposal is advisory only
@@ -430,7 +437,6 @@ export async function scoreUnscored(limit?: number): Promise<{ scored: number; q
             needsCheck: d.needsCheck,
             locationQuote: r.locationQuote?.slice(0, 300) || null,
             experienceQuote: r.experienceQuote?.slice(0, 300) || null,
-            roleCategory: r.roleCategory,
             scoreReasons: JSON.stringify(r.reasons),
             scoredAt: new Date(),
             feedStatus: queue ? "queued" : "new",
